@@ -52,9 +52,13 @@ You can run everything on a single machine as well, but this README focuses on t
 ---
 Quick Start
 Prerequisites
+
 Windows: Java 17, Maven, Node.js 18+
+
 Linux VM: Docker + Docker Compose
+
 Ollama running (local or reachable over network)
+
 ---
 1) Start Milvus / infra on the Linux VM
 
@@ -104,7 +108,7 @@ spring.ai.openai.chat.options.model=qwen2.5:7b
 spring.ai.openai.embedding.options.model=nomic-embed-text
 
 # --- Milvus (Linux VM) ---
-spring.ai.vectorstore.milvus.host=<VM_IP>     # e.g. 192.168.193.128
+spring.ai.vectorstore.milvus.host=<VM_IP>     
 spring.ai.vectorstore.milvus.port=19530
 spring.ai.vectorstore.milvus.initialize-schema=true
 
