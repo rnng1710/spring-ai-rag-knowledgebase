@@ -22,3 +22,20 @@
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
 replay_pid*
+
+# ===== frontend =====
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# ===== backend =====
+backend/target/
+backend/data/
+backend/src/main/resources/application-ollama-openai.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/

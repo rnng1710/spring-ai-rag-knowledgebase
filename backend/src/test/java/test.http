@@ -1,0 +1,17 @@
+### 1. 触发索引导入 (使用 Admin 账号)
+POST http://localhost:8080/api/v1/index
+Authorization: Basic admin password
+Content-Type: application/json
+
+{}
+
+### -----------------------------------------------------------
+
+### 2. 发起 AI 对话 (使用 User 账号)
+POST http://localhost:8080/api/v1/chat?conversationId=fresh-start
+Authorization: Basic user password
+Content-Type: application/json
+
+{
+  "userInput": "图书馆在考试周几点关门？"
+}
