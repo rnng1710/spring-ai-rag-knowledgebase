@@ -6,9 +6,13 @@ import net.topikachu.rag.business.document.entity.Document;
 import net.topikachu.rag.business.document.entity.DocumentStatus;
 import net.topikachu.rag.business.document.mapper.DocumentMapper;
 import net.topikachu.rag.business.document.service.DocumentService;
+import net.topikachu.rag.business.document.vo.BatchUploadResponse;
+import net.topikachu.rag.business.document.vo.UploadItemResult;
+import net.topikachu.rag.business.document.vo.UploadResult;
 import net.topikachu.rag.service.etl.EtlPipeline;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -52,74 +56,88 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document>  
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public Boolean upload(MultipartFile file, String fileName, boolean overwrite) throws IOException {
+    public UploadResult upload(MultipartFile file, String fileName, boolean overwrite) throws IOException {
 
-// 1. Verification files(empty files/file size/file extension/whitelist)
+        // 1) Verify
         validateFile(file, fileName);
 
-        // 2. Generate docUuid
-        String docUuid = generateDocUuid();
-
-        // Select the final file name：Use the parameter "fileName" first，otherwise, use the original file name.
+        // 2) Final file name (priority parameter: fileName)
         String finalFileName = StringUtils.hasText(fileName) ? fileName : file.getOriginalFilename();
         finalFileName = sanitizeFileName(finalFileName);
 
-        // 3. Calculate the save path（input.directory/<docUuid>/filename）
-        Path dir = Paths.get(inputDirectory).toAbsolutePath().normalize().resolve(docUuid);
+        // 3) Write temporary files while calculating hash (read the stream only once, write it only once)
+        Path baseDir = Paths.get(inputDirectory).toAbsolutePath().normalize();
+        Files.createDirectories(baseDir);
+
+        Path tmp = Files.createTempFile(baseDir, "upload_", ".tmp");
+        String hash;
+        try (InputStream in = file.getInputStream()) {
+            hash = writeTempAndSha256(in, tmp);
+        } catch (Exception e) {
+            safeDelete(tmp);
+            throw e;
+        }
+
+        // 4) Before writing the final file / the library, perform a hash check to ensure there are no duplicates.
+        Document existed = findByHash(hash);
+        if (existed != null) {
+            safeDelete(tmp);
+            // Idempotent return: Returns existing record information without triggering ingestion
+            return toResult(existed, false);
+        }
+
+        // 5) New scene: Generate docUuid
+        String docUuid = generateDocUuid();
+
+        // 6) Calculate the final storage path input.directory/<docUuid>/filename
+        Path dir = baseDir.resolve(docUuid).normalize();
         Path target = dir.resolve(finalFileName).normalize();
 
-        // Prevent path traversal：target must under the dir.
+        // Prevent directory traversal
         if (!target.startsWith(dir)) {
-            throw new IllegalArgumentException("Invalid file name (path traversal detected).");
+            safeDelete(tmp);
+            throw new IllegalArgumentException("Illegal file name (path traversal detected).");
         }
 
         try {
-            // 4. Save the file to the disk.
             Files.createDirectories(dir);
 
             if (Files.exists(target) && !overwrite) {
-                throw new IllegalStateException("File already exists and overwrite=false: " + target);
+                safeDelete(tmp);
+                throw new IllegalStateException("The file already exists overwrite=false: " + target);
             }
 
-            // Using streaming replication is more controllable；when using overwrite, use REPLACE_EXISTING instead.
-            try (InputStream in = file.getInputStream()) {
-                CopyOption[] options = overwrite
-                        ? new CopyOption[]{StandardCopyOption.REPLACE_EXISTING}
-                        : new CopyOption[]{};
-                Files.copy(in, target, options);
-            }
+            // 7) temp -> target (Priority atomic movement)
+            moveTempToTarget(tmp, target, overwrite);
 
-            String hash = saveAndSha256(file.getInputStream(), target);
-
-            Document document = this.lambdaQuery()
-                    .eq(Document::getFileHash , hash)
-                    .one();
-
-            if (document != null) {
-                throw new IllegalStateException("Document cannot be duplicated " );
-            }
-
-
-            // 5. Write records in MySQL （UPLOADED）
+            // 8) Insert into the database（UPLOADED）
             Document doc = new Document();
             doc.setDocUuid(docUuid);
             doc.setFileName(finalFileName);
             doc.setStatus(DocumentStatus.UPLOADED.name());
             doc.setFileHash(hash);
-
-            // public field
             doc.setCreateDate(LocalDateTime.now());
             doc.setUpdateDate(LocalDateTime.now());
 
-            int inserted = documentMapper.insert(doc);
-            if (inserted != 1) {
-                // DB failed. Try to delete the disk files to avoid orphan files.
+            try {
+                int inserted = documentMapper.insert(doc);
+                if (inserted != 1) {
+                    safeDelete(target);
+                    throw new IllegalStateException("Insert knowledge_document failed。");
+                }
+            } catch (DuplicateKeyException dup) {
+                // Concurrently: Another request has already been inserted into the same hash.
                 safeDelete(target);
-                throw new IllegalStateException("Insert knowledge_document failed.");
+
+                Document win = findByHash(hash);
+                if (win != null) {
+                    // Returns the winner's record with no triggering of ingestion
+                    return toResult(win, false);
+                }
+                throw dup;
             }
 
-            // 5.1 Upload triggers a full ingestion scan
-            // Note: this will scan the whole input.directory
+            // 9) Only when "insertion is successful" will ingestion be triggered ingestion
             etlPipeline.ingestionByPath(target)
                     .subscribe(
                             null,
@@ -127,24 +145,89 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document>  
                             () -> log.info("Ingestion done: {}", target)
                     );
 
-            // 6. return docUuid + filename + status
-            log.info("Document uploaded: docUuid={}, fileName={}, status={}, path={}",
-                    docUuid, finalFileName, doc.getStatus(), target);
+            log.info("Upload created: docUuid={}, fileName={}, status={}, fileHash={}, path={}",
+                    docUuid, finalFileName, doc.getStatus(), hash, target);
 
-            return true;
+            return toResult(doc, true);
 
         } catch (Exception e) {
-            // Attempt to write a failed state.
-            log.error("Upload failed: docUuid={}, fileName={}, overwrite={}, err={}",
-                    docUuid, finalFileName, overwrite, e.toString(), e);
-
-            // When failing, try to clear the files (if they have been written);
+            // Error Cleanup
+            safeDelete(tmp);
             safeDelete(target);
-
-            // Roll back the transaction.
             throw e;
         }
+    }
 
+    @Override
+    public BatchUploadResponse uploadBatch(List<MultipartFile> files, boolean overwrite) {
+        if (files == null || files.isEmpty()) {
+            return BatchUploadResponse.builder()
+                    .total(0).successCount(0).createdCount(0).existedCount(0).failedCount(0)
+                    .results(List.of())
+                    .build();
+        }
+
+        List<UploadItemResult> results = new ArrayList<>(files.size());
+        int success = 0, created = 0, existed = 0, failed = 0;
+
+        for (MultipartFile f : files) {
+            try {
+                UploadResult r = upload(f, null, overwrite);
+
+                results.add(UploadItemResult.builder()
+                        .success(true)
+                        .created(r.isCreated())
+                        .docUuid(r.getDocUuid())
+                        .fileName(r.getFileName())
+                        .status(r.getStatus())
+                        .fileHash(r.getFileHash())
+                        .build());
+
+                success++;
+                if (r.isCreated()) created++;
+                else existed++;
+
+            } catch (Exception e) {
+                log.error("Batch upload failed: fileName={}, size={}, err={}",
+                        safeName(f), (f == null ? -1 : f.getSize()), e.toString(), e);
+
+                results.add(UploadItemResult.builder()
+                        .success(false)
+                        .created(false)
+                        .fileName(safeName(f))
+                        .error(e.getMessage())
+                        .build());
+
+                failed++;
+            }
+        }
+
+        return BatchUploadResponse.builder()
+                .total(files.size())
+                .successCount(success)
+                .createdCount(created)
+                .existedCount(existed)
+                .failedCount(failed)
+                .results(results)
+                .build();
+    }
+
+    private UploadResult toResult(Document doc, boolean created) {
+        return UploadResult.builder()
+                .created(created)
+                .docUuid(doc.getDocUuid())
+                .fileName(doc.getFileName())
+                .status(doc.getStatus())
+                .fileHash(doc.getFileHash())
+                .build();
+    }
+
+    private Document findByHash(String hash) {
+        if (!StringUtils.hasText(hash)) return null;
+        return this.lambdaQuery()
+                .eq(Document::getFileHash, hash)
+                .last("LIMIT 1")
+                .one();
     }
 
     private void validateFile(MultipartFile file, String fileName) {
@@ -207,14 +290,17 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document>  
         }
     }
 
+    private String safeName(MultipartFile f) {
+        return (f == null) ? null : f.getOriginalFilename();
+    }
 
-    private String saveAndSha256(InputStream in, Path target) {
+
+
+    private String writeTempAndSha256(InputStream in, Path tmp) {
         try {
-            Files.createDirectories(target.getParent());
-
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             try (DigestInputStream dis = new DigestInputStream(in, md);
-                 OutputStream out = Files.newOutputStream(target)) {
+                 OutputStream out = Files.newOutputStream(tmp, StandardOpenOption.TRUNCATE_EXISTING)) {
 
                 byte[] buf = new byte[1024 * 1024];
                 int n;
@@ -224,7 +310,22 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document>  
             }
             return HexFormat.of().formatHex(md.digest());
         } catch (Exception e) {
-            throw new RuntimeException("Failed to save and hash: " + target, e);
+            throw new RuntimeException("Failed to write temporary files and calculate hash: " + tmp, e);
+        }
+    }
+
+    private void moveTempToTarget(Path tmp, Path target, boolean overwrite) throws IOException {
+        CopyOption[] options = overwrite
+                ? new CopyOption[]{StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE}
+                : new CopyOption[]{StandardCopyOption.ATOMIC_MOVE};
+
+        try {
+            Files.move(tmp, target, options);
+        } catch (AtomicMoveNotSupportedException ex) {
+            CopyOption[] fallback = overwrite
+                    ? new CopyOption[]{StandardCopyOption.REPLACE_EXISTING}
+                    : new CopyOption[]{};
+            Files.move(tmp, target, fallback);
         }
     }
 }

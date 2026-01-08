@@ -93,13 +93,46 @@ const upload = async () => {
       },
       body: form
     });
-    if (!response.ok) {
-      throw new Error(`Upload failed: ${response.status}`);
+    let payload: any = null;
+    let fallbackMsg = "";
+    try {
+      payload = await response.clone().json();
+    } catch {
+      try {
+        fallbackMsg = await response.text();
+      } catch {
+        fallbackMsg = "";
+      }
     }
-    uploadStatus.value = "Upload succeeded.";
-    ElMessage.success("Upload succeeded.");
+
+    const msgFromPayload = typeof payload?.msg === "string" ? payload.msg.trim() : "";
+    const msg = msgFromPayload || (typeof fallbackMsg === "string" ? fallbackMsg.trim() : "");
+
+    if (!response.ok) {
+      throw new Error(`Upload failed: HTTP ${response.status}${msg ? " " + msg : ""}`);
+    }
+
+    if (payload?.success !== true || payload?.code !== 0) {
+      const defaultMsg = "Upload failed: Unknown error";
+      throw new Error(msgFromPayload || defaultMsg);
+    }
+
+    const data = payload?.data ?? {};
+    const created = data?.created === true;
+    const docUuid = data?.docUuid ?? data?.doc_uuid ?? "";
+    const name = data?.fileName ?? data?.filename ?? fileName.value.trim() ?? file.value.name;
+    const status = data?.status ?? "";
+    const hash = data?.hash ?? "";
+
+    if (created) {
+      ElMessage.success("Upload successful: New document created");
+      uploadStatus.value = `Created: docUuid=${docUuid}, fileName=${name}, status=${status}, hash=${hash}`;
+    } else {
+      ElMessage.info("File already exists: Please do not upload duplicates");
+      uploadStatus.value = `Existed: docUuid=${docUuid}, fileName=${name}, status=${status}, hash=${hash}`;
+    }
   } catch (err: any) {
-    uploadStatus.value = `Upload failed: ${err?.message || err}`;
+    uploadStatus.value = `Upload failed`;
     ElMessage.error(uploadStatus.value);
   } finally {
     uploading.value = false;
