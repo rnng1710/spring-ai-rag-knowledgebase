@@ -19,9 +19,9 @@
           <el-input v-model="username" placeholder="user" />
         </el-form-item>
         <el-form-item label="Password">
-          <el-input v-model="password" type="password" placeholder="password" />
+          <el-input v-model="password" type="password" placeholder="password" @keyup.enter="login" />
         </el-form-item>
-        <el-button type="primary" class="login-button" @click="login">Continue</el-button>
+        <el-button type="primary" class="login-button" :loading="loading" @click="login">Continue</el-button>
       </el-form>
       <div class="login-footer">
         User: chat with the knowledge base. Admin: manage indexing and uploads.
@@ -33,16 +33,35 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { useRouter } from "vue-router";
-import { ensureAuth } from "../api/client";
+import { loginApi, setTokens } from "../api/client";
+import { ElMessage } from 'element-plus';
 
 const router = useRouter();
 const role = ref<"user" | "admin">("user");
 const username = ref("user");
 const password = ref("password");
+const loading = ref(false);
 
-const login = () => {
-  ensureAuth(username.value, password.value);
-  localStorage.setItem("auth_role", role.value);
-  router.push(role.value === "admin" ? "/admin/index" : "/user/chat");
+const login = async () => {
+    if(!username.value || !password.value) {
+        ElMessage.warning("请输入用户名和密码");
+        return;
+    }
+
+    loading.value = true;
+    try {
+        const tokens = await loginApi(username.value, password.value);
+        setTokens(tokens.access_token, tokens.refresh_token);
+        localStorage.setItem("auth_role", role.value);
+        localStorage.setItem("auth_user", username.value); // For display
+        
+        ElMessage.success("登录成功");
+        router.push(role.value === "admin" ? "/admin/index" : "/user/chat");
+    } catch (e: any) {
+        console.error(e);
+        ElMessage.error(e.message || "登录失败");
+    } finally {
+        loading.value = false;
+    }
 };
 </script>

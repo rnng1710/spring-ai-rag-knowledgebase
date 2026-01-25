@@ -1,14 +1,7 @@
 <template>
   <div class="page">
     <div class="header" style="margin-bottom: 16px;">
-      <div>
-        <h2>Admin Console</h2>
-        <div class="muted">Signed in as {{ username }}</div>
-      </div>
-      <div>
-        <el-button @click="goStatus" style="margin-right: 8px;">Status</el-button>
-        <el-button @click="logout">Switch Account</el-button>
-      </div>
+      <h2>Dashboard</h2>
     </div>
     <div class="grid grid-2">
       <div class="card">
@@ -62,14 +55,5 @@ const startIndexing = async () => {
   }
 };
 
-const goStatus = () => {
-  router.push("/admin/status");
-};
 
-const logout = () => {
-  localStorage.removeItem("auth_basic");
-  localStorage.removeItem("auth_user");
-  localStorage.removeItem("auth_role");
-  router.push("/login");
-};
 </script>

@@ -53,7 +53,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { useRouter } from "vue-router";
-import { apiUrl, getAuthHeader } from "../api/client";
+import { apiUrl, getAuthHeader, clearTokens } from "../api/client";
 import { streamSsePost } from "../api/sse";
 
 const router = useRouter();
@@ -88,7 +88,7 @@ const reset = () => {
 };
 
 const logout = () => {
-  localStorage.removeItem("auth_basic");
+  clearTokens();
   localStorage.removeItem("auth_user");
   localStorage.removeItem("auth_role");
   router.push("/login");

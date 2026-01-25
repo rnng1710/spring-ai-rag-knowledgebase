@@ -55,7 +55,7 @@
 import { ref } from "vue";
 import { ElMessage } from "element-plus";
 import { useRouter } from "vue-router";
-import { apiUrl, getAuthHeader } from "../api/client";
+import { apiUrl, getAuthHeader, clearTokens } from "../api/client";
 
 const router = useRouter();
 const username = ref(localStorage.getItem("auth_user") || "admin");
@@ -154,7 +154,7 @@ const goIndex = () => {
 };
 
 const logout = () => {
-  localStorage.removeItem("auth_basic");
+  clearTokens();
   localStorage.removeItem("auth_user");
   localStorage.removeItem("auth_role");
   router.push("/login");

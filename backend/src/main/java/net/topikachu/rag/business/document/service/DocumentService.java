@@ -22,4 +22,8 @@ public interface DocumentService extends IService<Document> {
      * 批量上传（幂等）：对每个文件返回 created/docUuid/status/fileName/fileHash；单文件失败不影响其它文件
      */
     BatchUploadResponse uploadBatch(List<MultipartFile> files, boolean overwrite);
+
+    void removeDocumentById(Long id);
+
+    void removeDocumentsBatch(List<Long> ids);
 }

@@ -17,6 +17,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.ai.vectorstore.filter.FilterExpressionBuilder;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -30,13 +32,16 @@ import java.util.stream.Collectors;
 
 @Service
 @Slf4j
-public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document>  implements DocumentService{
+public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> implements DocumentService {
 
     @Autowired
     private DocumentMapper documentMapper;
 
     @Autowired
     private EtlPipeline etlPipeline;
+
+    @Autowired
+    private VectorStore vectorStore;
 
     @Value("${rag.upload.max-size-bytes:52428800}")
     private long maxSizeBytes;
@@ -49,6 +54,7 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document>  
 
     /**
      * upload file method
+     * 
      * @param file
      * @param fileName
      * @param overwrite
@@ -65,7 +71,8 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document>  
         String finalFileName = StringUtils.hasText(fileName) ? fileName : file.getOriginalFilename();
         finalFileName = sanitizeFileName(finalFileName);
 
-        // 3) Write temporary files while calculating hash (read the stream only once, write it only once)
+        // 3) Write temporary files while calculating hash (read the stream only once,
+        // write it only once)
         Path baseDir = Paths.get(inputDirectory).toAbsolutePath().normalize();
         Files.createDirectories(baseDir);
 
@@ -78,11 +85,18 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document>  
             throw e;
         }
 
-        // 4) Before writing the final file / the library, perform a hash check to ensure there are no duplicates.
+        // 4) Before writing the final file / the library, perform a hash check to
+        // ensure there are no duplicates.
         Document existed = findByHash(hash);
         if (existed != null) {
             safeDelete(tmp);
-            // Idempotent return: Returns existing record information without triggering ingestion
+
+            if (overwrite) {
+                throw new IllegalArgumentException("The file already exists : " + existed.getFileName());
+            }
+
+            // Idempotent return: Returns existing record information without triggering
+            // ingestion
             return toResult(existed, false);
         }
 
@@ -138,12 +152,11 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document>  
             }
 
             // 9) Only when "insertion is successful" will ingestion be triggered ingestion
-            etlPipeline.ingestionByPath(target)
+            etlPipeline.ingestionByPath(target, docUuid)
                     .subscribe(
                             null,
                             err -> log.error("Ingestion failed: {}", target, err),
-                            () -> log.info("Ingestion done: {}", target)
-                    );
+                            () -> log.info("Ingestion done: {}", target));
 
             log.info("Upload created: docUuid={}, fileName={}, status={}, fileHash={}, path={}",
                     docUuid, finalFileName, doc.getStatus(), hash, target);
@@ -155,6 +168,57 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document>  
             safeDelete(tmp);
             safeDelete(target);
             throw e;
+        }
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void removeDocumentById(Long id) {
+        Document doc = this.getById(id);
+        if (doc == null)
+            return;
+
+        // 1. Remove from Vector Store (Cascade)
+        try {
+            // Delete by metadata: doc_uuid == doc.getDocUuid()
+            vectorStore.delete(new FilterExpressionBuilder().eq("doc_uuid", doc.getDocUuid()).build());
+            log.info("Deleted from vector store: docUuid={}", doc.getDocUuid());
+        } catch (Exception e) {
+            log.warn("Failed to delete from vector store (might not exist or not supported): {}", doc.getDocUuid(), e);
+        }
+
+        // 2. Remove file from disk
+        try {
+            Path baseDir = Paths.get(inputDirectory).toAbsolutePath().normalize();
+            Path dir = baseDir.resolve(doc.getDocUuid()).normalize();
+            if (Files.exists(dir)) {
+                try (java.util.stream.Stream<Path> walk = Files.walk(dir)) {
+                    walk.sorted(Comparator.reverseOrder())
+                            .forEach(p -> {
+                                try {
+                                    Files.delete(p);
+                                } catch (IOException ignore) {
+                                }
+                            });
+                }
+                log.info("Deleted file directory: {}", dir);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to delete file directory", e);
+        }
+
+        // 3. Remove from DB
+        this.removeById(id);
+        log.info("Deleted from database: id={}", id);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void removeDocumentsBatch(List<Long> ids) {
+        if (ids == null || ids.isEmpty())
+            return;
+        for (Long id : ids) {
+            removeDocumentById(id);
         }
     }
 
@@ -184,8 +248,10 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document>  
                         .build());
 
                 success++;
-                if (r.isCreated()) created++;
-                else existed++;
+                if (r.isCreated())
+                    created++;
+                else
+                    existed++;
 
             } catch (Exception e) {
                 log.error("Batch upload failed: fileName={}, size={}, err={}",
@@ -223,7 +289,8 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document>  
     }
 
     private Document findByHash(String hash) {
-        if (!StringUtils.hasText(hash)) return null;
+        if (!StringUtils.hasText(hash))
+            return null;
         return this.lambdaQuery()
                 .eq(Document::getFileHash, hash)
                 .last("LIMIT 1")
@@ -278,12 +345,14 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document>  
 
     private String getExtension(String filename) {
         int idx = filename.lastIndexOf('.');
-        if (idx < 0 || idx == filename.length() - 1) return "";
+        if (idx < 0 || idx == filename.length() - 1)
+            return "";
         return filename.substring(idx + 1).toLowerCase(Locale.ROOT);
     }
 
     private void safeDelete(Path p) {
-        if (p == null) return;
+        if (p == null)
+            return;
         try {
             Files.deleteIfExists(p);
         } catch (Exception ignore) {
@@ -294,13 +363,11 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document>  
         return (f == null) ? null : f.getOriginalFilename();
     }
 
-
-
     private String writeTempAndSha256(InputStream in, Path tmp) {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             try (DigestInputStream dis = new DigestInputStream(in, md);
-                 OutputStream out = Files.newOutputStream(tmp, StandardOpenOption.TRUNCATE_EXISTING)) {
+                    OutputStream out = Files.newOutputStream(tmp, StandardOpenOption.TRUNCATE_EXISTING)) {
 
                 byte[] buf = new byte[1024 * 1024];
                 int n;
@@ -316,15 +383,15 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document>  
 
     private void moveTempToTarget(Path tmp, Path target, boolean overwrite) throws IOException {
         CopyOption[] options = overwrite
-                ? new CopyOption[]{StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE}
-                : new CopyOption[]{StandardCopyOption.ATOMIC_MOVE};
+                ? new CopyOption[] { StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE }
+                : new CopyOption[] { StandardCopyOption.ATOMIC_MOVE };
 
         try {
             Files.move(tmp, target, options);
         } catch (AtomicMoveNotSupportedException ex) {
             CopyOption[] fallback = overwrite
-                    ? new CopyOption[]{StandardCopyOption.REPLACE_EXISTING}
-                    : new CopyOption[]{};
+                    ? new CopyOption[] { StandardCopyOption.REPLACE_EXISTING }
+                    : new CopyOption[] {};
             Files.move(tmp, target, fallback);
         }
     }
