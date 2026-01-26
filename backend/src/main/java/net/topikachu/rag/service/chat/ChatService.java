@@ -5,15 +5,13 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.prompt.PromptTemplate;
-import org.springframework.ai.rag.advisor.RetrievalAugmentationAdvisor;
-import org.springframework.ai.rag.preretrieval.query.transformation.CompressionQueryTransformer;
-import org.springframework.ai.rag.retrieval.search.VectorStoreDocumentRetriever;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
+
+import java.util.List;
+import java.util.stream.Collectors;
 
 import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 
@@ -21,63 +19,52 @@ import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 @Slf4j
 public class ChatService {
 
+    @Autowired
+    private ChatModel chatModel;
+    @Autowired
+    private VectorStore vectorStore;
+    @Autowired
+    private ChatMemory chatMemory;
 
-	MessageChatMemoryAdvisor messageChatMemoryAdvisor;
-	RetrievalAugmentationAdvisor retrievalAugmentationAdvisor;
-	ChatClient chatClient;
-	private static final PromptTemplate COMPRESSION_PROMPT_TEMPLATE = new PromptTemplate("""
-			Given the following conversation history and a follow-up query, your task is to synthesize
-			a concise, standalone query that incorporates the context from the history.
-			Ensure the standalone query is clear, specific, and maintains the user's intent.
-			Return the standalone query as the response only without any other irrelevant content.
-			Conversation history:
-			{history}
-			
-			Follow-up query:
-			{query}
-			
-			Standalone query:
-			""");
+    private final ChatClient chatClient;
+    private final MessageChatMemoryAdvisor messageChatMemoryAdvisor;
 
+    public ChatService(ChatModel chatModel, VectorStore vectorStore, ChatMemory chatMemory) {
+        this.chatModel = chatModel;
+        this.vectorStore = vectorStore;
+        this.chatMemory = chatMemory;
 
-	@Autowired
-	public void ChatService(ChatModel chatModel, VectorStore vectorStore, ChatMemory chatMemory) {
-		messageChatMemoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory)
-				.build();
-		retrievalAugmentationAdvisor = RetrievalAugmentationAdvisor.builder()
-				.queryTransformers(
-						CompressionQueryTransformer.builder()
-								.chatClientBuilder(ChatClient.builder(chatModel))
-								.promptTemplate(COMPRESSION_PROMPT_TEMPLATE)
-								.build()
-				)
-				.documentRetriever(VectorStoreDocumentRetriever.builder()
-						.vectorStore(vectorStore)
-						.build())
-				.build();
-		chatClient = ChatClient.builder(chatModel)
-				.build();
-	}
+        this.messageChatMemoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory).build();
+        this.chatClient = ChatClient.builder(chatModel).build();
+    }
 
-	public ChatClient.ChatClientRequestSpec input(String userInput, String conversationId) {
-		return chatClient.prompt()
-				.advisors(
-						messageChatMemoryAdvisor,
-						retrievalAugmentationAdvisor
-				)
-				.advisors(spec -> spec.param(CONVERSATION_ID, conversationId))
-				.user(userInput);
-	}
+    public record ChatStreamResponse(Flux<String> flux, List<org.springframework.ai.document.Document> sources) {
+    }
 
-	public Flux<String> stream(String userInput, String conversationId) {
-		return input(userInput, conversationId)
-				.stream().content();
-	}
+    public ChatStreamResponse streamWithSources(String userInput, String conversationId) {
+        // 1. Explicit Retrieval
+        List<org.springframework.ai.document.Document> docs = vectorStore.similaritySearch(
+                org.springframework.ai.vectorstore.SearchRequest.builder()
+                        .query(userInput)
+                        .topK(4)
+                        .build());
 
-	public ChatResponse call(String userInput, String conversationId) {
-		return input(userInput, conversationId)
-				.call().chatResponse();
-	}
+        // 2. Build Context
+        String context = docs.stream()
+                .map(d -> d.getText())
+                .collect(Collectors.joining("\n\n"));
 
+        // 3. Stream Response
+        Flux<String> flux = chatClient.prompt()
+                .system(s -> s.text(
+                        "You are a helpful assistant. Answer the user's question using the provided context.\n\nContext:\n{context}")
+                        .param("context", context))
+                .user(userInput)
+                .advisors(messageChatMemoryAdvisor)
+                .advisors(spec -> spec.param(CONVERSATION_ID, conversationId))
+                .stream()
+                .content();
 
+        return new ChatStreamResponse(flux, docs);
+    }
 }

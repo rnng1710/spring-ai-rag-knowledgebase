@@ -20,6 +20,10 @@
           <el-icon><Document /></el-icon>
           <span>Documents</span>
         </el-menu-item>
+        <el-menu-item index="/admin/users">
+          <el-icon><User /></el-icon>
+          <span>Users</span>
+        </el-menu-item>
       </el-menu>
       
       <div class="aside-footer">
@@ -59,7 +63,7 @@
 import { computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { clearTokens } from "../api/client";
-import { Odometer, Document, SwitchButton, UserFilled } from '@element-plus/icons-vue';
+import { Odometer, Document, SwitchButton, UserFilled, User } from '@element-plus/icons-vue';
 
 const route = useRoute();
 const router = useRouter();

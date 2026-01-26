@@ -6,6 +6,8 @@ import AdminStatusView from "../views/AdminStatusView.vue";
 import AdminLayout from "../layout/AdminLayout.vue";
 import AdminDocumentsView from "../views/AdminDocumentsView.vue";
 
+import UserManagement from "../views/admin/UserManagement.vue";
+
 const router = createRouter({
   history: createWebHistory(),
   routes: [
@@ -20,6 +22,7 @@ const router = createRouter({
       children: [
         { path: "index", component: AdminIndexView },
         { path: "documents", component: AdminDocumentsView },
+        { path: "users", component: UserManagement },
         { path: "status", component: AdminStatusView }
       ]
     }

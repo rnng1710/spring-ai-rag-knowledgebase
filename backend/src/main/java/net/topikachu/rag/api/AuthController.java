@@ -1,6 +1,7 @@
 package net.topikachu.rag.api;
 
 import net.topikachu.rag.common.AjaxResult;
+import net.topikachu.rag.service.SysUserService;
 import net.topikachu.rag.service.TokenService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -19,12 +20,10 @@ public class AuthController {
     private TokenService tokenService;
 
     @Autowired
-    private JwtDecoder jwtDecoder;
+    private SysUserService sysUserService;
 
-    // Hardcoded users: admin/admin, user/user
-    private static final Map<String, String> USERS = Map.of(
-            "admin", "admin",
-            "user", "user");
+    @Autowired
+    private JwtDecoder jwtDecoder;
 
     @PostMapping("/login")
     public AjaxResult login(@RequestBody Map<String, String> body) {
@@ -35,12 +34,47 @@ public class AuthController {
             return AjaxResult.error(400, "Username and password are required");
         }
 
-        if (!USERS.containsKey(username) || !USERS.get(username).equals(password)) {
-            return AjaxResult.error(401, "Invalid username or password");
+        try {
+            Map<String, String> tokens = sysUserService.login(username, password);
+            return AjaxResult.success(tokens);
+        } catch (Exception e) {
+            return AjaxResult.error(401, e.getMessage());
+        }
+    }
+
+    @PostMapping("/register")
+    public AjaxResult register(@RequestBody Map<String, String> body) {
+        String username = body.get("username");
+        String password = body.get("password");
+
+        if (!StringUtils.hasText(username) || !StringUtils.hasText(password)) {
+            return AjaxResult.error(400, "Username and password are required");
         }
 
-        String role = "admin".equals(username) ? "ADMIN" : "USER";
-        return AjaxResult.success(tokenService.generateTokens(username, role));
+        try {
+            sysUserService.register(username, password);
+            return AjaxResult.success("User registered successfully");
+        } catch (Exception e) {
+            return AjaxResult.error(400, e.getMessage());
+        }
+    }
+
+    @PostMapping("/change-password")
+    public AjaxResult changePassword(@RequestBody Map<String, String> body) {
+        String username = body.get("username");
+        String oldPassword = body.get("old_password");
+        String newPassword = body.get("new_password");
+
+        if (!StringUtils.hasText(username) || !StringUtils.hasText(oldPassword) || !StringUtils.hasText(newPassword)) {
+            return AjaxResult.error(400, "Username, old_password and new_password are required");
+        }
+
+        try {
+            sysUserService.changePassword(username, oldPassword, newPassword);
+            return AjaxResult.success("Password changed successfully");
+        } catch (Exception e) {
+            return AjaxResult.error(400, e.getMessage());
+        }
     }
 
     @PostMapping("/refresh")
@@ -77,11 +111,15 @@ public class AuthController {
 
             String username = jwt.getSubject();
 
-            if (!USERS.containsKey(username)) {
+            // Re-verify user existence
+            if (sysUserService.findByUsername(username) == null) {
                 return AjaxResult.error(401, "User not found");
             }
 
-            String role = "admin".equals(username) ? "ADMIN" : "USER";
+            // Assume refreshes keep the same role (or re-fetch from DB if needed, but
+            // tokenService usually just needs username/role)
+            // Ideally we re-fetch role from DB:
+            String role = sysUserService.findByUsername(username).getRole();
 
             return AjaxResult.success(tokenService.generateTokens(username, role));
 

@@ -1,7 +1,7 @@
 export const streamSsePost = async (
   url: string,
   body: Record<string, unknown> | null,
-  onChunk: (data: string) => void,
+  onChunk: (event: string, data: string) => void,
   authHeader: string
 ) => {
   const response = await fetch(url, {
@@ -26,14 +26,27 @@ export const streamSsePost = async (
     const { value, done } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-    const events = buffer.split("\n\n");
-    buffer = events.pop() || "";
-    for (const evt of events) {
-      const lines = evt.split("\n");
+
+    // Split by double newline (SSE block separator)
+    const blocks = buffer.split("\n\n");
+    buffer = blocks.pop() || "";
+
+    for (const block of blocks) {
+      const lines = block.split("\n");
+      let eventType = "message";
+      let dataBuffer = "";
+
       for (const line of lines) {
-        if (line.startsWith("data:")) {
-          onChunk(line.replace(/^data:\s?/, ""));
+        if (line.startsWith("event:")) {
+          eventType = line.replace(/^event:\s?/, "").trim();
+        } else if (line.startsWith("data:")) {
+          dataBuffer += line.replace(/^data:\s?/, "") + "\n";
         }
+      }
+
+      if (dataBuffer) {
+        // Remove trailing newline added by data accumulation
+        onChunk(eventType, dataBuffer.trim());
       }
     }
   }
