@@ -5,6 +5,7 @@ import net.topikachu.rag.service.chat.ChatService;
 import net.topikachu.rag.service.etl.EtlPipeline;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import org.springframework.http.codec.ServerSentEvent;
@@ -30,6 +31,7 @@ public class RestApi {
 	private EtlPipeline etlPipeline;
 
 	@PostMapping(path = "/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+	@PreAuthorize("hasAnyRole('USER', 'ADMIN')")
 	public Flux<ServerSentEvent<Object>> chat(@RequestBody ChatRequest chatRequest,
 			@RequestParam() String conversationId,
 			Principal principal) {
@@ -62,6 +64,7 @@ public class RestApi {
 	}
 
 	@PostMapping(path = "/index", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+	@PreAuthorize("hasRole('ADMIN')")
 	public Flux<String> index() {
 		return etlPipeline.ingestionFlux()
 				.map(document -> (String) document.getMetadata().get(METADATA_SOURCE));

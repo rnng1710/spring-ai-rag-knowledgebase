@@ -16,12 +16,13 @@ public interface DocumentService extends IService<Document> {
     UploadResult upload(
             @RequestPart("file") MultipartFile file,
             @RequestParam(value = "fileName", required = false) String fileName,
-            @RequestParam(value = "overwrite", defaultValue = "false") boolean overwrite) throws IOException;
+            @RequestParam(value = "overwrite", defaultValue = "false") boolean overwrite,
+            String userId) throws IOException;
 
     /**
      * 批量上传（幂等）：对每个文件返回 created/docUuid/status/fileName/fileHash；单文件失败不影响其它文件
      */
-    BatchUploadResponse uploadBatch(List<MultipartFile> files, boolean overwrite);
+    BatchUploadResponse uploadBatch(List<MultipartFile> files, boolean overwrite, String userId);
 
     void removeDocumentById(Long id);
 

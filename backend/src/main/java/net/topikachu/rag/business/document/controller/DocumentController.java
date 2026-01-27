@@ -6,6 +6,7 @@ import net.topikachu.rag.common.AjaxResult;
 import net.topikachu.rag.business.document.service.DocumentService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -21,6 +22,7 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/v1")
 @Slf4j
+@PreAuthorize("hasAnyRole('USER', 'ADMIN')")
 public class DocumentController {
 
         @Autowired
@@ -30,10 +32,12 @@ public class DocumentController {
         public AjaxResult upLoad(
                         @RequestPart("file") MultipartFile file,
                         @RequestParam(value = "fileName", required = false) String fileName,
-                        @RequestParam(value = "overwrite", defaultValue = "false") boolean overwriet)
+                        @RequestParam(value = "overwrite", defaultValue = "false") boolean overwriet,
+                        Principal principal)
                         throws IOException {
 
-                UploadResult result = documentService.upload(file, fileName, overwriet);
+                String userId = (principal != null) ? principal.getName() : null;
+                UploadResult result = documentService.upload(file, fileName, overwriet, userId);
 
                 return AjaxResult.success(result);
         }
@@ -53,12 +57,13 @@ public class DocumentController {
                         Principal principal) {
                 // Record the operator's actions for auditing (creating an audit report is very
                 // useful)
+                String userId = (principal != null) ? principal.getName() : null;
                 log.info("Batch upload requested by user={}, fileCount={}, overwrite={}",
-                                principal == null ? "anonymous" : principal.getName(),
+                                userId,
                                 files == null ? 0 : files.size(),
                                 overwrite);
 
-                return AjaxResult.success(documentService.uploadBatch(files, overwrite));
+                return AjaxResult.success(documentService.uploadBatch(files, overwrite, userId));
         }
 
         @GetMapping("/docs")

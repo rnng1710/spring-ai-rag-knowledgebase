@@ -66,7 +66,7 @@
     <el-dialog v-model="dialogVisible" title="Upload Documents" width="600px" destroy-on-close>
       <el-tabs v-model="activeTab">
         <el-tab-pane label="Single File" name="single">
-           <el-form label-width="100px">
+           <el-form label-width="100px" @submit.prevent>
               <el-form-item label="File">
                  <input type="file" ref="singleFileInput" @change="onSingleFileChange" />
               </el-form-item>
@@ -79,7 +79,7 @@
            </el-form>
         </el-tab-pane>
         <el-tab-pane label="Batch Files" name="batch">
-            <el-form label-width="100px">
+            <el-form label-width="100px" @submit.prevent>
               <el-form-item label="Files">
                  <input type="file" multiple ref="batchFileInput" @change="onBatchFileChange" />
                  <div class="tip">Selected: {{ batchFiles.length }} files</div>
@@ -90,7 +90,7 @@
            </el-form>
         </el-tab-pane>
         <el-tab-pane label="Folder" name="folder">
-             <el-form label-width="100px">
+             <el-form label-width="100px" @submit.prevent>
               <el-form-item label="Folder">
                  <input type="file" webkitdirectory directory ref="folderInput" @change="onFolderChange" />
                  <div class="tip">Selected: {{ folderFiles.length }} files</div>
@@ -115,10 +115,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, reactive } from "vue";
+import { ref, onMounted, onUnmounted, reactive } from "vue";
 import { Search, Refresh, Plus, Delete } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { listDocs, deleteDoc, deleteDocsBatch, uploadSingle, uploadBatch, type Doc } from "../api/docs";
+import { connectSse, disconnectSse, type EtlMessage } from "../api/sse-fetch";
 
 // --- State ---
 const loading = ref(false);
@@ -149,6 +150,23 @@ const uploadLogs = ref<{type: string, msg: string}[]>([]);
 // --- Lifecycle ---
 onMounted(() => {
   loadData();
+  // Connect SSE
+  connectSse((msg: EtlMessage) => {
+      // Find row
+      const target = tableData.value.find(d => d.docUuid === msg.docUuid);
+      if (target) {
+          target.status = msg.status;
+          // Optional: We can also show a toast or notification
+          if (msg.status === 'COMPLETED') {
+              // Maybe reload to get updated metadata if needed?
+              // For now, just status update is enough.
+          }
+      }
+  });
+});
+
+onUnmounted(() => {
+    disconnectSse();
 });
 
 // --- Methods ---
@@ -206,9 +224,10 @@ const handleBatchDelete = async () => {
 };
 
 const getStatusType = (status: string) => {
-    if(status === 'INDEXED') return 'success';
+    if(status === 'COMPLETED' || status === 'INDEXED') return 'success';
     if(status === 'UPLOADED') return 'info';
     if(status === 'FAILED') return 'danger';
+    if(['READING', 'SPLITTING', 'VECTORIZING'].includes(status)) return 'warning';
     return '';
 };
 
@@ -252,9 +271,14 @@ const submitUpload = async () => {
             }
             const res = await uploadSingle(singleFile.value, uploadForm.fileName, uploadForm.overwrite);
             if (res.code === 0) {
-                 addLog(`Success: ${res.data.fileName}`, 'success');
-                 ElMessage.success("Upload success");
+                 const data = res.data;
+                 if (data.created) {
+                     ElMessage.success(`Upload Success: ${data.fileName}`);
+                 } else {
+                     ElMessage.info(`File already exists: ${data.fileName} (Status: ${data.status})`);
+                 }
                  loadData();
+                 dialogVisible.value = false; // Auto close
             } else {
                  addLog(`Failed: ${res.msg}`, 'error');
             }
@@ -265,18 +289,37 @@ const submitUpload = async () => {
                 ElMessage.warning("Please select files");
                 return;
             }
-            // Chunked upload could be better, but implementing single-request batch for now as per API
+            
             const res = await uploadBatch(files, uploadForm.overwrite);
              if (res.code === 0) {
                  const data = res.data; // BatchUploadResponse
-                 addLog(`Batch Completed. Total: ${data.total}, Success: ${data.successCount}, Failed: ${data.failedCount}`, 'info');
+                 // Batch might have mix of success/fail/existing
+                 // If total > 0, we consider it "done" and close dialog if user wants, 
+                 // BUT for batch it's often better to show the log. 
+                 // However, user requested auto-close on success. 
+                 // Let's close if all were processed (even if some failed or existed).
+                 
+                 let hasNew = false;
+                 let hasExisting = 0;
                  if(data.results) {
                      data.results.forEach((r: any) => {
-                         if(r.success) addLog(`OK: ${r.fileName}`, 'success');
-                         else addLog(`Err: ${r.fileName} - ${r.error}`, 'error');
+                         if(r.success) {
+                             if (r.new) hasNew = true;
+                             else hasExisting++;
+                         }
                      });
                  }
+                 
+                 if (hasNew) {
+                     ElMessage.success(`Batch Upload Completed. New: ${data.successCount - hasExisting}, Existing: ${hasExisting}`);
+                 } else if (hasExisting > 0) {
+                     ElMessage.info(`Batch Completed. All ${hasExisting} files already existed.`);
+                 } else {
+                     ElMessage.warning("Batch Completed with no successful uploads.");
+                 }
+
                  loadData();
+                 dialogVisible.value = false; // Auto close
             } else {
                  addLog(`Batch Failed: ${res.msg}`, 'error');
             }

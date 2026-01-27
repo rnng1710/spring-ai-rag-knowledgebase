@@ -62,7 +62,8 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public UploadResult upload(MultipartFile file, String fileName, boolean overwrite) throws IOException {
+    public UploadResult upload(MultipartFile file, String fileName, boolean overwrite, String userId)
+            throws IOException {
 
         // 1) Verify
         validateFile(file, fileName);
@@ -152,7 +153,7 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
             }
 
             // 9) Only when "insertion is successful" will ingestion be triggered ingestion
-            etlPipeline.ingestionByPath(target, docUuid)
+            etlPipeline.ingestionByPath(target, docUuid, userId)
                     .subscribe(
                             null,
                             err -> log.error("Ingestion failed: {}", target, err),
@@ -223,7 +224,7 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
     }
 
     @Override
-    public BatchUploadResponse uploadBatch(List<MultipartFile> files, boolean overwrite) {
+    public BatchUploadResponse uploadBatch(List<MultipartFile> files, boolean overwrite, String userId) {
         if (files == null || files.isEmpty()) {
             return BatchUploadResponse.builder()
                     .total(0).successCount(0).createdCount(0).existedCount(0).failedCount(0)
@@ -236,7 +237,7 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
 
         for (MultipartFile f : files) {
             try {
-                UploadResult r = upload(f, null, overwrite);
+                UploadResult r = upload(f, null, overwrite, userId);
 
                 results.add(UploadItemResult.builder()
                         .success(true)
