@@ -37,7 +37,8 @@ public class RestApi {
 			Principal principal) {
 		var conversationKey = String.format("%s:%s", principal.getName(), conversationId);
 
-		ChatService.ChatStreamResponse response = chatService.streamWithSources(chatRequest.userInput, conversationKey);
+		ChatService.ChatStreamResponse response = chatService.streamWithSources(chatRequest.userInput, conversationKey,
+				chatRequest.tags);
 
 		// 1. Prepare Source Event
 		List<Map<String, Object>> sourceMetadata = response.sources().stream()
@@ -70,6 +71,6 @@ public class RestApi {
 				.map(document -> (String) document.getMetadata().get(METADATA_SOURCE));
 	}
 
-	record ChatRequest(String userInput) implements Serializable {
+	record ChatRequest(String userInput, List<String> tags) implements Serializable {
 	}
 }

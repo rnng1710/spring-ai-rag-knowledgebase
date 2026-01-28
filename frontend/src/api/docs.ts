@@ -58,11 +58,14 @@ export const deleteDocsBatch = async (ids: (string | number)[]) => {
     if (json.code !== 0) throw new Error(json.msg || "Batch delete failed");
 };
 
-export const uploadSingle = async (file: File, fileName?: string, overwrite = false) => {
+export const uploadSingle = async (file: File, fileName?: string, overwrite = false, tags: string[] = []) => {
     const formData = new FormData();
     formData.append("file", file);
     if (fileName) formData.append("fileName", fileName);
     formData.append("overwrite", overwrite.toString());
+    if (tags && tags.length > 0) {
+        tags.forEach(tag => formData.append("tags", tag));
+    }
 
     const res = await fetch(apiUrl("/api/v1/docs/upload"), {
         method: "POST",
@@ -72,10 +75,13 @@ export const uploadSingle = async (file: File, fileName?: string, overwrite = fa
     return await res.json();
 };
 
-export const uploadBatch = async (files: File[], overwrite = false) => {
+export const uploadBatch = async (files: File[], overwrite = false, tags: string[] = []) => {
     const formData = new FormData();
     files.forEach(f => formData.append("files", f));
     formData.append("overwrite", overwrite ? "true" : "false");
+    if (tags && tags.length > 0) {
+        tags.forEach(tag => formData.append("tags", tag));
+    }
 
     const res = await fetch(apiUrl("/api/v1/upload/batch"), {
         method: "POST",
@@ -83,4 +89,15 @@ export const uploadBatch = async (files: File[], overwrite = false) => {
         body: formData
     });
     return await res.json();
+};
+
+export const getAllTags = async () => {
+    const res = await fetch(apiUrl("/api/v1/tags"), {
+        headers: { "Authorization": getAuthHeader() }
+    });
+    const json = await res.json();
+    if (json.code === 0) {
+        return json.data as string[];
+    }
+    return [];
 };

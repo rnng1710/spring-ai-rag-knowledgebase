@@ -9,6 +9,10 @@ import org.springframework.ai.reader.tika.TikaDocumentReader;
 import org.springframework.ai.transformer.splitter.TextSplitter;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.stereotype.Component;
+import org.springframework.ai.reader.pdf.PagePdfDocumentReader;
+import org.springframework.ai.reader.pdf.config.PdfDocumentReaderConfig;
+import org.springframework.ai.reader.ExtractedTextFormatter;
+import org.springframework.ai.document.DocumentReader;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
@@ -75,11 +79,40 @@ public class EtlPipeline {
 	}
 
 	// Compatible with legacy single path ingestion, now accepts docUuid and userId
-	public Mono<Void> ingestionByPath(Path path, String docUuid, String userId) {
+	public Mono<Void> ingestionByPath(Path path, String docUuid, String userId, List<String> tags) {
 		return Mono.defer(() -> {
 			// 1. Reading
 			return publishStatus(docUuid, userId, DocumentStatus.READING, "Reading file...")
-					.then(Mono.fromCallable(() -> new TikaDocumentReader(path.toUri().toString()).get())
+					.then(Mono.fromCallable(() -> {
+						DocumentReader reader;
+						String fileName = path.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
+
+						if (fileName.endsWith(".pdf")) {
+							// PDF: 强制按页切分，自动提取 page_number
+							PdfDocumentReaderConfig config = PdfDocumentReaderConfig.builder()
+									.withPageExtractedTextFormatter(ExtractedTextFormatter.builder()
+											.withNumberOfBottomTextLinesToDelete(1) // 可选：删除页脚干扰
+											.build())
+									.build();
+							reader = new PagePdfDocumentReader(path.toUri().toString(), config);
+						} else {
+							// 其他: 保持原样使用 Tika
+							reader = new TikaDocumentReader(path.toUri().toString());
+						}
+
+						List<Document> docs = reader.get();
+
+						// 2. 注入 Metadata (Tags, UUID, FileName)
+						for (Document doc : docs) {
+							doc.getMetadata().put("doc_uuid", docUuid);
+							doc.getMetadata().put("file_name", path.getFileName().toString());
+							if (tags != null && !tags.isEmpty()) {
+								// Store as comma-separated string for Milvus filter compatibility
+								doc.getMetadata().put("tags", String.join(",", tags));
+							}
+						}
+						return docs;
+					})
 							.subscribeOn(Schedulers.boundedElastic()));
 		})
 				.flatMap(docs -> {
@@ -92,11 +125,7 @@ public class EtlPipeline {
 					// 3. Vectorizing
 					return publishStatus(docUuid, userId, DocumentStatus.VECTORIZING, "Writing to Vector Store...")
 							.then(Mono.fromRunnable(() -> {
-								if (docUuid != null) {
-									for (Document d : splitDocs) {
-										d.getMetadata().put("doc_uuid", docUuid);
-									}
-								}
+								// Metadata already injected in step 1
 								vectorStore.write(splitDocs);
 							}).subscribeOn(Schedulers.boundedElastic()));
 				})

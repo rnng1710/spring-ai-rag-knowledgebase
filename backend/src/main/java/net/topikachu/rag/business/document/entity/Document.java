@@ -6,7 +6,7 @@ import lombok.Data;
 import net.topikachu.rag.common.BaseEntity;
 
 @Data
-@TableName("knowledge_document")
+@TableName(value = "knowledge_document", autoResultMap = true)
 public class Document extends BaseEntity {
 
     /**
@@ -29,4 +29,12 @@ public class Document extends BaseEntity {
 
     @TableField("FILE_HASH")
     private String fileHash;
+
+    /**
+     * 标签列表 (JSON)
+     * DB: JSON Array String
+     * Java: List<String>
+     */
+    @TableField(typeHandler = com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler.class)
+    private java.util.List<String> tags;
 }

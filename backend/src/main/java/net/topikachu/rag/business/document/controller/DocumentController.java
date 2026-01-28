@@ -33,11 +33,12 @@ public class DocumentController {
                         @RequestPart("file") MultipartFile file,
                         @RequestParam(value = "fileName", required = false) String fileName,
                         @RequestParam(value = "overwrite", defaultValue = "false") boolean overwriet,
+                        @RequestParam(value = "tags", required = false) List<String> tags,
                         Principal principal)
                         throws IOException {
 
                 String userId = (principal != null) ? principal.getName() : null;
-                UploadResult result = documentService.upload(file, fileName, overwriet, userId);
+                UploadResult result = documentService.upload(file, fileName, overwriet, userId, tags);
 
                 return AjaxResult.success(result);
         }
@@ -54,16 +55,17 @@ public class DocumentController {
         public AjaxResult uploadBatch(
                         @RequestPart("files") List<MultipartFile> files,
                         @RequestParam(defaultValue = "false") boolean overwrite,
+                        @RequestParam(value = "tags", required = false) List<String> tags,
                         Principal principal) {
                 // Record the operator's actions for auditing (creating an audit report is very
                 // useful)
                 String userId = (principal != null) ? principal.getName() : null;
-                log.info("Batch upload requested by user={}, fileCount={}, overwrite={}",
+                log.info("Batch upload requested by user={}, fileCount={}, overwrite={}, tags={}",
                                 userId,
                                 files == null ? 0 : files.size(),
-                                overwrite);
+                                overwrite, tags);
 
-                return AjaxResult.success(documentService.uploadBatch(files, overwrite, userId));
+                return AjaxResult.success(documentService.uploadBatch(files, overwrite, userId, tags));
         }
 
         @GetMapping("/docs")
@@ -90,5 +92,10 @@ public class DocumentController {
         public AjaxResult removeBatch(@RequestBody List<Long> ids) {
                 documentService.removeDocumentsBatch(ids);
                 return AjaxResult.success();
+        }
+
+        @GetMapping("/tags")
+        public AjaxResult getTags() {
+                return AjaxResult.success(documentService.getAllTags());
         }
 }

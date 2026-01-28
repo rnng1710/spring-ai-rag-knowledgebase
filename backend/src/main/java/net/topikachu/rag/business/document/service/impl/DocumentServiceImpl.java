@@ -62,7 +62,7 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public UploadResult upload(MultipartFile file, String fileName, boolean overwrite, String userId)
+    public UploadResult upload(MultipartFile file, String fileName, boolean overwrite, String userId, List<String> tags)
             throws IOException {
 
         // 1) Verify
@@ -131,6 +131,7 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
             doc.setFileName(finalFileName);
             doc.setStatus(DocumentStatus.UPLOADED.name());
             doc.setFileHash(hash);
+            doc.setTags(tags);
             doc.setCreateDate(LocalDateTime.now());
             doc.setUpdateDate(LocalDateTime.now());
 
@@ -153,7 +154,7 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
             }
 
             // 9) Only when "insertion is successful" will ingestion be triggered ingestion
-            etlPipeline.ingestionByPath(target, docUuid, userId)
+            etlPipeline.ingestionByPath(target, docUuid, userId, tags)
                     .subscribe(
                             null,
                             err -> log.error("Ingestion failed: {}", target, err),
@@ -224,7 +225,8 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
     }
 
     @Override
-    public BatchUploadResponse uploadBatch(List<MultipartFile> files, boolean overwrite, String userId) {
+    public BatchUploadResponse uploadBatch(List<MultipartFile> files, boolean overwrite, String userId,
+            List<String> tags) {
         if (files == null || files.isEmpty()) {
             return BatchUploadResponse.builder()
                     .total(0).successCount(0).createdCount(0).existedCount(0).failedCount(0)
@@ -237,7 +239,7 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
 
         for (MultipartFile f : files) {
             try {
-                UploadResult r = upload(f, null, overwrite, userId);
+                UploadResult r = upload(f, null, overwrite, userId, tags);
 
                 results.add(UploadItemResult.builder()
                         .success(true)
@@ -277,6 +279,29 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
                 .failedCount(failed)
                 .results(results)
                 .build();
+    }
+
+    @Override
+    public List<String> getAllTags() {
+        // Query all documents that have tags
+        List<Document> docs = this.lambdaQuery()
+                .isNotNull(Document::getTags)
+                .list();
+
+        // Extract, Flatten, Stream, Distinct, Sort
+        if (docs == null || docs.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        return docs.stream()
+                .map(Document::getTags)
+                .filter(Objects::nonNull)
+                .flatMap(List::stream)
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .distinct()
+                .sorted()
+                .collect(Collectors.toList());
     }
 
     private UploadResult toResult(Document doc, boolean created) {

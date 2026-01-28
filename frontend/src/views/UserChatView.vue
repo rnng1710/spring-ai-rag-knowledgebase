@@ -5,6 +5,16 @@
         <div class="chat-title">Campus KB</div>
         <div class="chat-sub">Signed in as {{ username }}</div>
       </div>
+      
+      <!-- Knowledge Base Selector -->
+      <div class="kb-selector" style="margin-bottom: 20px; padding: 0 12px;">
+          <div style="font-size:12px; color:#444746; margin-bottom:8px; font-weight:500">Knowledge Base (Tag)</div>
+          <el-select v-model="selectedTag" placeholder="Select Knowledge Base" size="small" clearable>
+            <template #prefix><el-icon><Collection /></el-icon></template>
+            <el-option v-for="tag in tagsOptions" :key="tag" :label="tag" :value="tag" />
+          </el-select>
+      </div>
+
       <el-button class="chat-action" @click="reset">
          <el-icon style="margin-right:8px"><Plus /></el-icon> New chat
       </el-button>
@@ -91,18 +101,9 @@
                     
                     <!-- Sources -->
                     <div v-if="msg.sources && msg.sources.length > 0" class="message-sources">
-                        <div class="sources-title">Sources</div>
-                        <div class="sources-list">
-                            <el-tag 
-                                v-for="(source, sIdx) in msg.sources" 
-                                :key="sIdx" 
-                                size="small" 
-                                effect="plain" 
-                                class="source-tag"
-                                round
-                            >
-                                {{ source.doc_uuid ? (source.source || 'Document') : 'Unknown Source' }}
-                            </el-tag>
+                        <div v-for="(source, sIdx) in msg.sources" :key="sIdx" style="font-size: 13px; color: #444746; margin-top: 4px;">
+                            此回答引用自《{{ source.doc_uuid ? (source.file_name || source.source || 'Document') : 'Unknown Source' }}》
+                            <span v-if="source.page_number">第 {{ source.page_number }} 页</span>
                         </div>
                     </div>
                 </div>
@@ -139,11 +140,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick, reactive } from "vue";
+import { ref, nextTick, reactive, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { apiUrl, getAuthHeader, clearTokens } from "../api/client";
 import { streamSsePost } from "../api/sse";
-import { Plus, SwitchButton, Position, Close } from "@element-plus/icons-vue";
+import { getAllTags } from "../api/docs";
+import { Plus, SwitchButton, Position, Close, Collection } from "@element-plus/icons-vue";
 
 // Simple markdown render
 const renderMarkdown = (text: string) => {
@@ -154,6 +156,7 @@ const router = useRouter();
 const username = ref(localStorage.getItem("auth_user") || "user");
 const conversationId = ref(`conv-${Math.random().toString(36).slice(2, 8)}`);
 const question = ref("");
+const selectedTag = ref("");
 
 interface Message {
     role: 'user' | 'assistant';
@@ -163,6 +166,13 @@ interface Message {
 
 const messages = ref<Message[]>([]);
 const loading = ref(false);
+const tagsOptions = ref<string[]>([]);
+
+onMounted(async () => {
+    try {
+        tagsOptions.value = await getAllTags();
+    } catch (e) { console.error(e) }
+});
 
 const adjustTextareaHeight = (e: Event) => {
     const target = e.target as HTMLTextAreaElement;
@@ -195,7 +205,7 @@ const startChat = async () => {
   try {
     await streamSsePost(
       apiUrl(`/api/v1/chat?conversationId=${encodeURIComponent(conversationId.value)}`),
-      { userInput },
+      { userInput, tags: selectedTag.value ? [selectedTag.value] : [] },
       (event, data) => {
         if (event === 'sources') {
             try {

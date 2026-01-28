@@ -6,7 +6,7 @@ import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 import com.baomidou.mybatisplus.annotation.TableId;
 import lombok.EqualsAndHashCode;
-import org.apache.poi.util.StringUtil;
+import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.util.Date;
@@ -54,7 +54,7 @@ public class BaseEntity {
      */
     @TableField("UPDATE_DATE")
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
-    private LocalDateTime  updateDate;
+    private LocalDateTime updateDate;
 
     /**
      * 备注
@@ -70,6 +70,6 @@ public class BaseEntity {
     private Integer version;
 
     public boolean isNew() {
-        return StringUtil.isBlank(getId());
+        return !StringUtils.hasText(getId());
     }
 }

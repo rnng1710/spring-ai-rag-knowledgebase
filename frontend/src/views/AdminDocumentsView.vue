@@ -76,6 +76,18 @@
               <el-form-item label="Overwrite">
                   <el-switch v-model="uploadForm.overwrite" />
               </el-form-item>
+              <el-form-item label="Tags">
+                   <el-select
+                      v-model="uploadForm.tagsInput"
+                      multiple
+                      filterable
+                      allow-create
+                      default-first-option
+                      placeholder="Select or Create Tags"
+                   >
+                     <el-option v-for="tag in tagsOptions" :key="tag" :label="tag" :value="tag" />
+                   </el-select>
+              </el-form-item>
            </el-form>
         </el-tab-pane>
         <el-tab-pane label="Batch Files" name="batch">
@@ -87,6 +99,9 @@
               <el-form-item label="Overwrite">
                   <el-switch v-model="uploadForm.overwrite" />
               </el-form-item>
+              <el-form-item label="Tags">
+                  <el-input v-model="uploadForm.tagsInput" placeholder="Comma separated, e.g. finance" />
+              </el-form-item>
            </el-form>
         </el-tab-pane>
         <el-tab-pane label="Folder" name="folder">
@@ -97,6 +112,9 @@
               </el-form-item>
               <el-form-item label="Overwrite">
                   <el-switch v-model="uploadForm.overwrite" />
+              </el-form-item>
+              <el-form-item label="Tags">
+                  <el-input v-model="uploadForm.tagsInput" placeholder="Comma separated, e.g. finance" />
               </el-form-item>
            </el-form>
         </el-tab-pane>
@@ -118,7 +136,7 @@
 import { ref, onMounted, onUnmounted, reactive } from "vue";
 import { Search, Refresh, Plus, Delete } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { listDocs, deleteDoc, deleteDocsBatch, uploadSingle, uploadBatch, type Doc } from "../api/docs";
+import { listDocs, deleteDoc, deleteDocsBatch, uploadSingle, uploadBatch, getAllTags, type Doc } from "../api/docs";
 import { connectSse, disconnectSse, type EtlMessage } from "../api/sse-fetch";
 
 // --- State ---
@@ -140,16 +158,18 @@ const activeTab = ref("single");
 const uploading = ref(false);
 const uploadForm = reactive({
     fileName: "",
-    overwrite: false
+    overwrite: false,
+    tagsInput: [] as string[]
 });
+const tagsOptions = ref<string[]>([]);
 const singleFile = ref<File | null>(null);
 const batchFiles = ref<File[]>([]);
 const folderFiles = ref<File[]>([]);
 const uploadLogs = ref<{type: string, msg: string}[]>([]);
 
 // --- Lifecycle ---
-onMounted(() => {
-  loadData();
+onMounted(async () => {
+  await Promise.all([loadData(), loadTags()]);
   // Connect SSE
   connectSse((msg: EtlMessage) => {
       // Find row
@@ -168,6 +188,14 @@ onMounted(() => {
 onUnmounted(() => {
     disconnectSse();
 });
+
+const loadTags = async () => {
+    try {
+        tagsOptions.value = await getAllTags();
+    } catch (e) {
+        console.error("Failed to load tags", e);
+    }
+};
 
 // --- Methods ---
 const loadData = async () => {
@@ -241,6 +269,8 @@ const openUploadDialog = () => {
     folderFiles.value = [];
     uploadForm.fileName = "";
     uploadForm.overwrite = false;
+    uploadForm.tagsInput = [];
+    loadTags(); // Refresh tags on open
 };
 
 const onSingleFileChange = (e: Event) => {
@@ -263,13 +293,15 @@ const addLog = (msg: string, type='info') => {
 const submitUpload = async () => {
     uploading.value = true;
     uploadLogs.value = [];
+    const tags = uploadForm.tagsInput; // Now it is already an array
+
     try {
         if (activeTab.value === 'single') {
             if (!singleFile.value) {
                 ElMessage.warning("Please select a file");
                 return;
             }
-            const res = await uploadSingle(singleFile.value, uploadForm.fileName, uploadForm.overwrite);
+            const res = await uploadSingle(singleFile.value, uploadForm.fileName, uploadForm.overwrite, tags);
             if (res.code === 0) {
                  const data = res.data;
                  if (data.created) {
@@ -290,7 +322,7 @@ const submitUpload = async () => {
                 return;
             }
             
-            const res = await uploadBatch(files, uploadForm.overwrite);
+            const res = await uploadBatch(files, uploadForm.overwrite, tags);
              if (res.code === 0) {
                  const data = res.data; // BatchUploadResponse
                  // Batch might have mix of success/fail/existing
