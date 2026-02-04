@@ -25,9 +25,9 @@ Built on Spring Boot 3 and Project Reactor, this system features several archite
 * **Server-Side RRF Fusion**: Abandons traditional in-memory ranking. We directly leverage the **Milvus V2 Client's** `HybridSearchReq` to perform **Reciprocal Rank Fusion (RRF)** within the vector database, significantly reducing network overhead.
 * **High-Availability Semantic Reranking**: Integrates a local **BGE-Reranker** service fortified with a custom **Circuit Breaker**. If the reranker experiences high latency or failure, the system automatically degrades gracefully to ensure 100% availability.
 
-### 2. ⚡ Reactive Async ETL Pipeline
-* **Non-Blocking I/O**: Refactored entirely with **Project Reactor (Flux/Mono)**. The entire pipeline—file reading, Tika parsing, chunking, and vectorization—is asynchronous.
-* **Backpressure Control**: The `HybridVectorWriter` implements flow control logic. Architected to handle high-concurrency ingestion scenarios, ensuring that the backend Embedding Model service remains stable under heavy load.
+### 2. ⚡ High-Performance Async ETL Pipeline
+* **End-to-End Async Processing**: Refactored the document processing flow using an **Asynchronous Concurrency Model**. File reading, Tika parsing, chunking, and vectorization are executed in parallel to maximize CPU and I/O efficiency.
+* **Concurrency Control**: Implemented smart **Rate Limiting** logic in the ingestion layer to prevent overwhelming the backend Embedding Model service during high-concurrency uploads.
 * **Smart De-duplication**: Implements **SHA-256** file fingerprinting for idempotent uploads, preventing resource waste from duplicate processing.
 
 ### 3. 🔍 Granular Context Governance
@@ -158,9 +158,9 @@ Circuit Breaker Tuning: If your server CPU is weak, consider increasing rag.rera
 * **服务端 RRF 融合**：摒弃传统的内存排序，直接调用 **Milvus V2 Client** 的 `HybridSearchReq`，在向量数据库侧完成 **RRF (Reciprocal Rank Fusion)** 排名，显著降低网络开销与计算延迟。
 * **高可用语义精排**：集成本地 **BGE-Reranker** 服务，并辅以**熔断器 (Circuit Breaker)**，确保在重排服务高延时或异常时自动降级，保障系统 100% 可用性。
 
-### 2. ⚡ 响应式异步 ETL 流水线 (Reactive Async ETL)
-* **全链路非阻塞**：基于 **Project Reactor (Flux/Mono)** 重构。从文件读取、Tika 解析、分块到向量化，全流程异步处理。
-* **背压控制 (Backpressure)**：`HybridVectorWriter` 实现了流控逻辑，基于 Reactive Streams 规范构建，HybridVectorWriter 内置流控机制。设计上能够应对大规模文档的并发写入，通过动态调节请求速率，防止压垮后端的 Embedding 模型服务。。
+### 2. ⚡ 高性能异步 ETL 流水线 (High-Performance Async ETL)
+* **全链路异步处理**：采用 **异步并发模型** 重构文档处理流程。从文件读取、Tika 解析、分块到向量化，均实现并行处理，显著提升 CPU 与 I/O 利用率。
+* **智能流控机制**：在写入层实现了 **并发控制 (Concurrency Control)**，确保在海量文档写入时，能够动态调节请求速率，防止压垮后端的 Embedding 模型服务。
 * **智能去重**：基于 **SHA-256** 的文件指纹去重机制，实现幂等上传，避免重复计算造成的资源浪费。
 
 ### 3. 🔍 精细化上下文治理 (Granular Context Governance)
