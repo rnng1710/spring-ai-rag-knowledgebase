@@ -1,6 +1,7 @@
 package net.topikachu.rag.ai.memory;
 
-import org.jetbrains.annotations.NotNull;
+
+import com.drew.lang.annotations.NotNull;
 import org.springframework.ai.chat.memory.ChatMemoryRepository;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.dao.DataAccessException;

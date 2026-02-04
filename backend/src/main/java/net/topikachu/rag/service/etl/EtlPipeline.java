@@ -7,7 +7,6 @@ import net.topikachu.rag.business.document.mapper.DocumentMapper;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.reader.tika.TikaDocumentReader;
 import org.springframework.ai.transformer.splitter.TextSplitter;
-import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.stereotype.Component;
 import org.springframework.ai.reader.pdf.PagePdfDocumentReader;
 import org.springframework.ai.reader.pdf.config.PdfDocumentReaderConfig;
@@ -25,27 +24,26 @@ import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.util.HexFormat;
 import java.util.List;
-import java.util.UUID;
 
 @Component
 @Slf4j
 public class EtlPipeline {
 
 	private final DocReader documentReader;
-	private final VectorStore vectorStore;
+	private final HybridVectorWriter hybridVectorWriter; // Replace VectorStore
 	private final TextSplitter textSplitter;
 	// Injected mapper for database operations
 	private final DocumentMapper documentMapper;
 	private final org.springframework.data.redis.core.StringRedisTemplate redisTemplate;
 	private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
-	public EtlPipeline(VectorStore vectorStore,
+	public EtlPipeline(HybridVectorWriter hybridVectorWriter,
 			TextSplitter textSplitter,
 			DocReader documentReader,
 			DocumentMapper documentMapper,
 			org.springframework.data.redis.core.StringRedisTemplate redisTemplate,
 			com.fasterxml.jackson.databind.ObjectMapper objectMapper) {
-		this.vectorStore = vectorStore;
+		this.hybridVectorWriter = hybridVectorWriter;
 		this.textSplitter = textSplitter;
 		this.documentReader = documentReader;
 		this.documentMapper = documentMapper;
@@ -122,11 +120,14 @@ public class EtlPipeline {
 									.subscribeOn(Schedulers.boundedElastic()));
 				})
 				.flatMap(splitDocs -> {
-					// 3. Vectorizing
+					// 3. Vectorizing - Use HybridVectorWriter for dual vector storage
 					return publishStatus(docUuid, userId, DocumentStatus.VECTORIZING, "Writing to Vector Store...")
-							.then(Mono.fromRunnable(() -> {
-								// Metadata already injected in step 1
-								vectorStore.write(splitDocs);
+							.then(Mono.defer(() -> {
+								if (!splitDocs.isEmpty()) {
+									// Write both dense and sparse vectors
+									return hybridVectorWriter.write(splitDocs);
+								}
+								return Mono.empty();
 							}).subscribeOn(Schedulers.boundedElastic()));
 				})
 				.then(publishStatus(docUuid, userId, DocumentStatus.COMPLETED, "Processing finished"))

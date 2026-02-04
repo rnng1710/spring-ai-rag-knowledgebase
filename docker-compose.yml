@@ -1,0 +1,115 @@
+version: '3.5'
+
+services:
+  # 1. 业务数据库 (MySQL 8.0)
+  mysql-db:
+    image: mysql:8.0
+    container_name: campus-mysql
+    ports:
+      - "3309:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: campus_knowledge
+    volumes:
+      - ./mysql_data:/var/lib/mysql
+    restart: always
+
+  # 2. 对话记忆/缓存 (Redis) - 用于消除 Spring Boot 启动时的健康检查警告
+  redis:
+    image: redis:latest
+    container_name: milvus-redis
+    ports:
+      - "6379:6379"
+    restart: always
+
+  # 3. Milvus 元数据存储 (etcd)
+  etcd:
+    container_name: milvus-etcd
+    image: quay.io/coreos/etcd:v3.5.5
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+    command: etcd -advertise-client-urls http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    volumes:
+      - ./volumes/etcd:/etcd
+    restart: always
+
+  # 4. Milvus 对象存储 (MinIO)
+  minio:
+    container_name: milvus-minio
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - ./volumes/minio:/data
+    restart: always
+
+  # 5. Milvus 主服务 (升级至 v2.4.15 以匹配 Java SDK 2.5.8)
+  standalone:
+    container_name: milvus-standalone
+    image: milvusdb/milvus:v2.6.9
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    volumes:
+      - ./volumes/milvus:/var/lib/milvus 
+      - ./user.yaml:/milvus/configs/user.yaml
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    depends_on:
+      - "etcd"
+      - "minio"
+    restart: always
+
+  # 6. Milvus 可视化管理界面 (Attu)
+  attu:
+    container_name: milvus-attu
+    image: zilliz/attu:latest
+    ports:
+      - "8000:3000"
+    depends_on:
+      - "standalone"
+    restart: always
+
+  # 7. Jaeger (Tracing UI)
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    container_name: jaeger
+    ports:
+      - "16686:16686"
+      - "14250:14250"
+    restart: always
+
+  #8. OpenTelemetry Collector
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.100.0
+    container_name: otel-collector
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4318:4318"
+    depends_on:
+      - jaeger
+    restart: always
+
+ # 9. 本地重排序服务 (TEI)
+  reranker:
+    image: ghcr.m.daocloud.io/huggingface/text-embeddings-inference:cpu-latest
+    container_name: rerank-service
+    ports:
+      - "8099:80"  # 将宿主机的 8099 映射到容器内部的 80 端口
+    volumes:
+      - ./models/bge-reranker-base:/data
+    command: 
+      - "--model-id"
+      - "/data"
+      - "--auto-truncate"
+    environment:
+      - HF_ENDPOINT=https://hf-mirror.com
+    restart: always
