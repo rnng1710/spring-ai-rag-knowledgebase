@@ -34,6 +34,7 @@ frontend/.env.*
 backend/target/
 backend/data/
 backend/src/main/resources/application-ollama-openai.properties
+backend/src/main/resources/application.properties
 
 # IDE
 .idea/
