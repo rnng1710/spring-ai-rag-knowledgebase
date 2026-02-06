@@ -304,6 +304,47 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
                 .collect(Collectors.toList());
     }
 
+    private static final int MAX_RETRY = 3;
+
+    @Override
+    public void retryIngestion(Long id, String userId) {
+        Document doc = this.getById(id);
+        if (doc == null) {
+            throw new IllegalArgumentException("Document not found: " + id);
+        }
+        if (!DocumentStatus.FAILED.name().equals(doc.getStatus())) {
+            throw new IllegalStateException("Only FAILED documents can be retried");
+        }
+        if (doc.getRetryCount() != null && doc.getRetryCount() >= MAX_RETRY) {
+            throw new IllegalStateException("Max retry (" + MAX_RETRY + ") exceeded, please contact support");
+        }
+
+        Path path = Paths.get(inputDirectory, doc.getDocUuid(), doc.getFileName());
+
+        // Defensive check: file might be deleted by ops or quarantined by antivirus
+        if (!Files.exists(path)) {
+            doc.setStatus(DocumentStatus.FAILED.name());
+            doc.setErrorMessage("源文件已丢失，无法重试，请重新上传");
+            doc.setUpdateDate(LocalDateTime.now());
+            this.updateById(doc);
+            return;
+        }
+
+        // Reset status for retry
+        doc.setStatus(DocumentStatus.UPLOADED.name());
+        doc.setErrorMessage(null);
+        doc.setErrorStack(null);
+        doc.setUpdateDate(LocalDateTime.now());
+        this.updateById(doc);
+
+        // Trigger ingestion again
+        etlPipeline.ingestionByPath(path, doc.getDocUuid(), userId, doc.getTags())
+                .subscribe(
+                        null,
+                        err -> log.error("Retry ingestion failed: {}", path, err),
+                        () -> log.info("Retry ingestion done: {}", path));
+    }
+
     private UploadResult toResult(Document doc, boolean created) {
         return UploadResult.builder()
                 .created(created)

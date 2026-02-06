@@ -30,4 +30,9 @@ public interface DocumentService extends IService<Document> {
     void removeDocumentsBatch(List<Long> ids);
 
     List<String> getAllTags();
+
+    /**
+     * Retry ingestion for a FAILED document
+     */
+    void retryIngestion(Long id, String userId);
 }
