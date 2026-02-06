@@ -106,4 +106,28 @@ public class HybridVectorWriter {
                 }).subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic()))
                 .then();
     }
+
+    /**
+     * Delete vectors by doc_uuid for rollback on failure.
+     * Used to clean up orphan vectors when ingestion fails.
+     */
+    public reactor.core.publisher.Mono<Void> deleteByDocUuid(String docUuid) {
+        if (docUuid == null || docUuid.isEmpty()) {
+            return reactor.core.publisher.Mono.empty();
+        }
+
+        return reactor.core.publisher.Mono.fromRunnable(() -> {
+            try {
+                io.milvus.v2.service.vector.request.DeleteReq deleteReq = io.milvus.v2.service.vector.request.DeleteReq
+                        .builder()
+                        .collectionName(collectionName)
+                        .filter("metadata[\"doc_uuid\"] == \"" + docUuid + "\"")
+                        .build();
+                milvusClient.delete(deleteReq);
+                log.info("Cleaned up vectors for docUuid={}", docUuid);
+            } catch (Exception e) {
+                log.warn("Failed to cleanup vectors for docUuid={}, may not exist", docUuid, e);
+            }
+        }).subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic()).then();
+    }
 }

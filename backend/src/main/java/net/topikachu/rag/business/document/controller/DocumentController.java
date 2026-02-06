@@ -98,4 +98,15 @@ public class DocumentController {
         public AjaxResult getTags() {
                 return AjaxResult.success(documentService.getAllTags());
         }
+
+        /**
+         * Retry ingestion for a FAILED document
+         */
+        @PostMapping("/docs/{id}/retry")
+        public AjaxResult retry(@PathVariable Long id, Principal principal) {
+                String userId = (principal != null) ? principal.getName() : null;
+                log.info("Retry ingestion requested by user={}, docId={}", userId, id);
+                documentService.retryIngestion(id, userId);
+                return AjaxResult.success("Retry started");
+        }
 }

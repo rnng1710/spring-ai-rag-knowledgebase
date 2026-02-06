@@ -134,7 +134,12 @@ public class EtlPipeline {
 				.doOnSuccess(v -> log.info("IngestionByPath finished: {}", path))
 				.doOnError(e -> {
 					log.error("Error during ingestionByPath: {}", path, e);
-					publishStatus(docUuid, userId, DocumentStatus.FAILED, "Error: " + e.getMessage()).subscribe();
+					// 1. Cleanup Milvus vectors to prevent orphan data
+					hybridVectorWriter.deleteByDocUuid(docUuid)
+							.doOnError(ex -> log.warn("Cleanup failed for {}", docUuid, ex))
+							.subscribe();
+					// 2. Update DB with detailed error info
+					updateFailedStatus(docUuid, userId, e).subscribe();
 				});
 	}
 
@@ -182,6 +187,73 @@ public class EtlPipeline {
 	// Compatible with legacy interface
 	public java.util.List<Document> ingestion() {
 		return java.util.Collections.emptyList(); // Deprecated or unused
+	}
+
+	/**
+	 * Update document status to FAILED with detailed error info.
+	 * Stores user-friendly message in error_message and full stack in error_stack.
+	 */
+	private Mono<Void> updateFailedStatus(String docUuid, String userId, Throwable e) {
+		if (docUuid == null)
+			return Mono.empty();
+
+		return Mono.fromRunnable(() -> {
+			try {
+				String userMsg = extractUserMessage(e);
+				String techStack = formatStackTrace(e);
+
+				documentMapper.update(null,
+						Wrappers.<net.topikachu.rag.business.document.entity.Document>lambdaUpdate()
+								.set(net.topikachu.rag.business.document.entity.Document::getStatus,
+										DocumentStatus.FAILED.name())
+								.set(net.topikachu.rag.business.document.entity.Document::getErrorMessage, userMsg)
+								.set(net.topikachu.rag.business.document.entity.Document::getErrorStack, techStack)
+								.setSql("retry_count = IFNULL(retry_count, 0) + 1")
+								.set(net.topikachu.rag.business.document.entity.Document::getUpdateDate,
+										LocalDateTime.now())
+								.eq(net.topikachu.rag.business.document.entity.Document::getDocUuid, docUuid));
+
+				// Publish to Redis
+				if (userId != null) {
+					net.topikachu.rag.business.document.event.EtlStatusMessage message = new net.topikachu.rag.business.document.event.EtlStatusMessage(
+							docUuid, userId, DocumentStatus.FAILED, userMsg);
+					String json = objectMapper.writeValueAsString(message);
+					redisTemplate.convertAndSend(net.topikachu.rag.config.RedisPubSubConfig.TOPIC_ETL_STATUS, json);
+				}
+			} catch (Exception ex) {
+				log.error("Failed to update failed status for {}", docUuid, ex);
+			}
+		}).subscribeOn(Schedulers.boundedElastic()).then();
+	}
+
+	/**
+	 * Extract user-friendly error message from exception.
+	 */
+	private String extractUserMessage(Throwable e) {
+		if (e == null)
+			return "Unknown error";
+		// Get root cause message
+		Throwable cause = e;
+		while (cause.getCause() != null) {
+			cause = cause.getCause();
+		}
+		String msg = cause.getMessage();
+		if (msg == null || msg.isBlank()) {
+			msg = cause.getClass().getSimpleName();
+		}
+		return msg.length() > 500 ? msg.substring(0, 500) : msg;
+	}
+
+	/**
+	 * Format stack trace for technical debugging, limit to 2000 chars.
+	 */
+	private String formatStackTrace(Throwable e) {
+		if (e == null)
+			return null;
+		java.io.StringWriter sw = new java.io.StringWriter();
+		e.printStackTrace(new java.io.PrintWriter(sw));
+		String full = sw.toString();
+		return full.length() > 2000 ? full.substring(0, 2000) : full;
 	}
 
 	/**
