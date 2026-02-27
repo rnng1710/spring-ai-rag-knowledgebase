@@ -3,7 +3,7 @@ package net.topikachu.rag.api;
 import lombok.extern.slf4j.Slf4j;
 import net.topikachu.rag.service.chat.ChatService;
 import net.topikachu.rag.service.etl.EtlPipeline;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
@@ -22,13 +22,12 @@ import static org.springframework.ai.reader.tika.TikaDocumentReader.METADATA_SOU
 @RestController()
 @RequestMapping("/api/v1")
 @Slf4j
+@RequiredArgsConstructor
 public class RestApi {
 
-	@Autowired
-	private ChatService chatService;
+	private final ChatService chatService;
 
-	@Autowired
-	private EtlPipeline etlPipeline;
+	private final EtlPipeline etlPipeline;
 
 	@PostMapping(path = "/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
 	@PreAuthorize("hasAnyRole('USER', 'ADMIN')")

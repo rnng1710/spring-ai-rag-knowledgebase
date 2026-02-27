@@ -5,23 +5,21 @@ import net.topikachu.rag.entity.SysUser;
 import net.topikachu.rag.mapper.SysUserMapper;
 import net.topikachu.rag.service.SysUserService;
 import net.topikachu.rag.service.TokenService;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import java.util.Map;
 
 @Service
+@RequiredArgsConstructor
 public class SysUserServiceImpl implements SysUserService {
 
-    @Autowired
-    private SysUserMapper sysUserMapper;
+    private final SysUserMapper sysUserMapper;
 
-    @Autowired
-    private PasswordEncoder passwordEncoder;
+    private final PasswordEncoder passwordEncoder;
 
-    @Autowired
-    private TokenService tokenService;
+    private final TokenService tokenService;
 
     @Override
     public void register(String username, String password) {

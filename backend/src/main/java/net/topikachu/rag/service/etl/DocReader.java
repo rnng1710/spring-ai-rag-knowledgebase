@@ -20,7 +20,7 @@ public class DocReader implements DocumentReader {
 	@Value("${input.directory}")
 	private String inputDir;
 
-	@Value("${input.filename.glob:*.{txt,html}}")
+	@Value("${input.filename.glob:*.{txt,pdf,html}}")
 	private String pattern;
 
 	public Flux<Path> scanDirectory() {

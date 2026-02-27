@@ -4,7 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import net.topikachu.rag.business.document.vo.UploadResult;
 import net.topikachu.rag.common.AjaxResult;
 import net.topikachu.rag.business.document.service.DocumentService;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
@@ -23,10 +23,10 @@ import java.util.List;
 @RequestMapping("/api/v1")
 @Slf4j
 @PreAuthorize("hasAnyRole('USER', 'ADMIN')")
+@RequiredArgsConstructor
 public class DocumentController {
 
-        @Autowired
-        private DocumentService documentService;
+        private final DocumentService documentService;
 
         @PostMapping("/docs/upload")
         public AjaxResult upLoad(

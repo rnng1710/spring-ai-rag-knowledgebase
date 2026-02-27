@@ -7,6 +7,7 @@ import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.zip.CRC32;
 
+//TODO:: 最初版的向量生成策略，已经使用Python运行BGE-M3模型
 @Component
 public class SparseVectorGenerator {
 

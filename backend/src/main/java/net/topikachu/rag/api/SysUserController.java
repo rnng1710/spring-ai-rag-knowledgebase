@@ -3,7 +3,7 @@ package net.topikachu.rag.api;
 import net.topikachu.rag.common.AjaxResult;
 import net.topikachu.rag.entity.SysUser;
 import net.topikachu.rag.service.SysUserService;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.RequiredArgsConstructor;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 
@@ -11,10 +11,10 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/v1/admin/users")
+@RequiredArgsConstructor
 public class SysUserController {
 
-    @Autowired
-    private SysUserService sysUserService;
+    private final SysUserService sysUserService;
 
     @GetMapping
     public AjaxResult list() {
