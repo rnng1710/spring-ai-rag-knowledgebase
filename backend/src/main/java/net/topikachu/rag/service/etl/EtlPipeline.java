@@ -76,6 +76,7 @@ public class EtlPipeline {
 				});
 	}
 
+	// TODO::重构解析不同文件格式的策略，（考虑使用Python来处理数据的清洗和切分）
 	// Compatible with legacy single path ingestion, now accepts docUuid and userId
 	public Mono<Void> ingestionByPath(Path path, String docUuid, String userId, List<String> tags) {
 		return Mono.defer(() -> {
@@ -130,9 +131,10 @@ public class EtlPipeline {
 								return Mono.empty();
 							}).subscribeOn(Schedulers.boundedElastic()));
 				})
-				.then(publishStatus(docUuid, userId, DocumentStatus.COMPLETED, "Processing finished"))
+				.then(completeStatus(docUuid, userId))
 				.doOnSuccess(v -> log.info("IngestionByPath finished: {}", path))
 				.doOnError(e -> {
+					// TODO:: 没有测试过双库数据一致性策略是否有效（未加入看门口机制，定时扫描失败文件）
 					log.error("Error during ingestionByPath: {}", path, e);
 					// 1. Cleanup Milvus vectors to prevent orphan data
 					hybridVectorWriter.deleteByDocUuid(docUuid)
@@ -226,6 +228,56 @@ public class EtlPipeline {
 		}).subscribeOn(Schedulers.boundedElastic()).then();
 	}
 
+	/**
+	 * CAS (Compare And Swap) completion.
+	 * Only update to COMPLETED if current status is NOT FAILED.
+	 * If update fails (meaning Watchdog marked it FAILED), rollback vectors.
+	 */
+	private Mono<Void> completeStatus(String docUuid, String userId) {
+		return Mono.fromCallable(() -> {
+			// CAS check: status != FAILED
+			// We only want to succeed if the watchdog hasn't killed it.
+			int rows = documentMapper.update(null,
+					Wrappers.<net.topikachu.rag.business.document.entity.Document>lambdaUpdate()
+							.set(net.topikachu.rag.business.document.entity.Document::getStatus,
+									DocumentStatus.COMPLETED.name())
+							.set(net.topikachu.rag.business.document.entity.Document::getUpdateDate,
+									LocalDateTime.now())
+							.eq(net.topikachu.rag.business.document.entity.Document::getDocUuid, docUuid)
+							.ne(net.topikachu.rag.business.document.entity.Document::getStatus,
+									DocumentStatus.FAILED.name()));
+
+			if (rows == 0) {
+				String msg = "CAS conflict: Watchdog already marked doc " + docUuid + " as FAILED. Rolling back.";
+				log.warn(msg);
+				throw new IllegalStateException(msg);
+			}
+			return true;
+		}).subscribeOn(Schedulers.boundedElastic())
+				.onErrorResume(e -> {
+					// Rollback: delete vectors
+					return hybridVectorWriter.deleteByDocUuid(docUuid)
+							.then(Mono.error(e));
+				})
+				.then(publishRedisMessage(docUuid, userId, DocumentStatus.COMPLETED, "Processing finished"));
+	}
+
+	private Mono<Void> publishRedisMessage(String docUuid, String userId, DocumentStatus status, String msg) {
+		if (userId == null)
+			return Mono.empty();
+		return Mono.fromRunnable(() -> {
+			try {
+				net.topikachu.rag.business.document.event.EtlStatusMessage message = new net.topikachu.rag.business.document.event.EtlStatusMessage(
+						docUuid, userId, status, msg);
+				String json = objectMapper.writeValueAsString(message);
+				redisTemplate.convertAndSend(net.topikachu.rag.config.RedisPubSubConfig.TOPIC_ETL_STATUS, json);
+			} catch (Exception e) {
+				log.error("Failed to publish Redis message for {}", docUuid, e);
+			}
+		}).subscribeOn(Schedulers.boundedElastic()).then();
+	}
+
+	// TODO:: 文件上传失败时的用户提示，后端未验证效果，前端页面没有编写
 	/**
 	 * Extract user-friendly error message from exception.
 	 */

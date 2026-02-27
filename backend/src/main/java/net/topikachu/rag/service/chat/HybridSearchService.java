@@ -70,71 +70,94 @@ public class HybridSearchService {
     }
 
     /**
-     * Perform hybrid search (dense + sparse) with server-side RRF fusion.
-     * Uses TEI for embedding generation.
+     * Backward compatible method for existing ChatService calls.
+     * Defaults to using sparse (hybrid) search.
      */
     public List<Document> hybridSearch(String query, List<String> filterTags, int topK) {
-        long startTime = System.currentTimeMillis();
+        return hybridSearch(query, filterTags, topK, true);
+    }
 
+    /**
+     * Perform search with strict branching between Dense-only (SearchReq) and
+     * Hybrid (HybridSearchReq).
+     * Uses TEI for embedding generation.
+     */
+    public List<Document> hybridSearch(String query, List<String> filterTags, int topK, boolean useSparse) {
         try {
-            // 1. Generate vectors via TEI (Parallel)
-            // Block here because ChatService expects a synchronous List<Document>
-            return reactor.core.publisher.Mono.zip(
-                    teiEmbeddingClient.embedDense(query),
-                    teiEmbeddingClient.embedSparse(query)).map(tuple -> {
-                        List<Float> denseVector = tuple.getT1();
-                        SortedMap<Long, Float> sparseMap = tuple.getT2();
+            // Build filter expression
+            String filterExpr = null;
+            if (filterTags != null && !filterTags.isEmpty()) {
+                filterExpr = String.format("JSON_CONTAINS(metadata, '\"%s\"', '$.tags')", filterTags.get(0));
+            }
 
-                        FloatVec denseVec = new FloatVec(denseVector);
-                        SparseFloatVec sparseVec = new SparseFloatVec(sparseMap);
+            if (!useSparse) {
+                // V0: Dense Only. Use standard SearchReq.
+                log.debug("Executing V0 Dense-only SearchReq for query: {}", query);
+                List<Float> denseVector = teiEmbeddingClient.embedDense(query).block();
 
-                        // 2. Build filter expression
-                        String filterExpr = null;
-                        if (filterTags != null && !filterTags.isEmpty()) {
-                            filterExpr = String.format("JSON_CONTAINS(metadata, '\"%s\"', '$.tags')",
-                                    filterTags.get(0));
-                        }
+                io.milvus.v2.service.vector.request.SearchReq.SearchReqBuilder<?, ?> searchReqBuilder = io.milvus.v2.service.vector.request.SearchReq
+                        .builder()
+                        .collectionName(collectionName)
+                        .data(Collections.singletonList(new FloatVec(denseVector)))
+                        .outputFields(Arrays.asList("doc_id", "content", "metadata"))
+                        .topK(topK);
 
-                        // 3. Build ANN search requests
-                        AnnSearchReq.AnnSearchReqBuilder<?, ?> denseReqBuilder = AnnSearchReq.builder()
-                                .vectorFieldName("embedding")
-                                .vectors(Collections.singletonList(denseVec))
-                                .topK(denseTopK);
+                if (filterExpr != null) {
+                    searchReqBuilder.filter(filterExpr);
+                }
 
-                        AnnSearchReq.AnnSearchReqBuilder<?, ?> sparseReqBuilder = AnnSearchReq.builder()
-                                .vectorFieldName("sparse_vector")
-                                .vectors(Collections.singletonList(sparseVec))
-                                .topK(denseTopK);
+                SearchResp response = milvusClient.search(searchReqBuilder.build());
+                return convertToDocuments(response);
 
-                        if (filterExpr != null) {
-                            denseReqBuilder.expr(filterExpr);
-                            sparseReqBuilder.expr(filterExpr);
-                        }
+            } else {
+                // V1+: Hybrid Search. Use HybridSearchReq with RRF.
+                log.debug("Executing V1+ HybridSearchReq for query: {}", query);
+                return reactor.core.publisher.Mono.zip(
+                        teiEmbeddingClient.embedDense(query),
+                        teiEmbeddingClient.embedSparse(query)).map(tuple -> {
+                            List<Float> denseVector = tuple.getT1();
+                            SortedMap<Long, Float> sparseMap = tuple.getT2();
 
-                        AnnSearchReq denseReq = denseReqBuilder.build();
-                        AnnSearchReq sparseReq = sparseReqBuilder.build();
+                            FloatVec denseVec = new FloatVec(denseVector);
+                            SparseFloatVec sparseVec = new SparseFloatVec(sparseMap);
 
-                        // 4. Build hybrid search request
-                        return HybridSearchReq.builder()
-                                .collectionName(collectionName)
-                                .searchRequests(Arrays.asList(denseReq, sparseReq))
-                                .ranker(new RRFRanker(rrfK))
-                                .topK(topK)
-                                .outFields(Arrays.asList("doc_id", "content", "metadata"))
-                                .build();
+                            AnnSearchReq.AnnSearchReqBuilder<?, ?> denseReqBuilder = AnnSearchReq.builder()
+                                    .vectorFieldName("embedding")
+                                    .vectors(Collections.singletonList(denseVec))
+                                    .topK(denseTopK);
 
-                    }).map(hybridReq -> {
-                        // 5. Execute Milvus Search (Blocking IO)
-                        try {
+                            AnnSearchReq.AnnSearchReqBuilder<?, ?> sparseReqBuilder = AnnSearchReq.builder()
+                                    .vectorFieldName("sparse_vector")
+                                    .vectors(Collections.singletonList(sparseVec))
+                                    .topK(denseTopK);
+
+                            // Note: for AnnSearchReq, the builder method is expr(), not filter()
+                            if (filterTags != null && !filterTags.isEmpty()) {
+                                String lambdaFilterExpr = String.format("JSON_CONTAINS(metadata, '\"%s\"', '$.tags')",
+                                        filterTags.get(0));
+                                denseReqBuilder.expr(lambdaFilterExpr);
+                                sparseReqBuilder.expr(lambdaFilterExpr);
+                            }
+
+                            AnnSearchReq denseReq = denseReqBuilder.build();
+                            AnnSearchReq sparseReq = sparseReqBuilder.build();
+
+                            return HybridSearchReq.builder()
+                                    .collectionName(collectionName)
+                                    .searchRequests(Arrays.asList(denseReq, sparseReq))
+                                    .ranker(new RRFRanker(rrfK))
+                                    .topK(topK)
+                                    .outFields(Arrays.asList("doc_id", "content", "metadata"))
+                                    .build();
+
+                        }).map(hybridReq -> {
                             SearchResp response = milvusClient.hybridSearch(hybridReq);
                             return convertToDocuments(response);
-                        } catch (Exception e) {
-                            throw new RuntimeException("Milvus hybrid search failed", e);
-                        }
-                    }).block(); // Block to return List<Document>
+                        }).block();
+            }
 
         } catch (Exception e) {
-            log.error("Hybrid search failed, falling back to empty results", e);
+            log.error("Search failed, falling back to empty results", e);
             return Collections.emptyList();
         }
     }
