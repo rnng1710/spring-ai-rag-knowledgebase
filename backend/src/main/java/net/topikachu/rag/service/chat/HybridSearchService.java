@@ -20,6 +20,7 @@ import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import java.time.Duration;
 import java.util.*;
 
 /**
@@ -44,6 +45,9 @@ public class HybridSearchService {
 
     @Value("${rag.retrieval.rrf-k:60}")
     private int rrfK;
+
+    @Value("${rag.retrieval.timeout-seconds:30}")
+    private long timeoutSeconds;
 
     private final TeiEmbeddingClient teiEmbeddingClient;
     private final Gson gson = new Gson();
@@ -93,7 +97,8 @@ public class HybridSearchService {
             if (!useSparse) {
                 // V0: Dense Only. Use standard SearchReq.
                 log.debug("Executing V0 Dense-only SearchReq for query: {}", query);
-                List<Float> denseVector = teiEmbeddingClient.embedDense(query).block();
+                List<Float> denseVector = teiEmbeddingClient.embedDense(query)
+                        .block(Duration.ofSeconds(timeoutSeconds));
 
                 io.milvus.v2.service.vector.request.SearchReq.SearchReqBuilder<?, ?> searchReqBuilder = io.milvus.v2.service.vector.request.SearchReq
                         .builder()
@@ -153,7 +158,7 @@ public class HybridSearchService {
                         }).map(hybridReq -> {
                             SearchResp response = milvusClient.hybridSearch(hybridReq);
                             return convertToDocuments(response);
-                        }).block();
+                        }).block(Duration.ofSeconds(timeoutSeconds));
             }
 
         } catch (Exception e) {

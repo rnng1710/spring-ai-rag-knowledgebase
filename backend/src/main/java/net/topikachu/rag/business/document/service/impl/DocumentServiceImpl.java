@@ -19,6 +19,7 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.ai.vectorstore.filter.FilterExpressionBuilder;
+import org.springframework.beans.factory.ObjectProvider;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -40,6 +41,8 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
     private final EtlPipeline etlPipeline;
 
     private final VectorStore vectorStore;
+
+    private final ObjectProvider<DocumentService> documentServiceProvider;
 
     @Value("${rag.upload.max-size-bytes:52428800}")
     private long maxSizeBytes;
@@ -178,13 +181,16 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
         if (doc == null)
             return;
 
-        // 1. Remove from Vector Store (Cascade)
+        // 1. Remove from Vector Store (Cascade) - MUST NOT SWALLOW EXCEPTION
         try {
             // Delete by metadata: doc_uuid == doc.getDocUuid()
             vectorStore.delete(new FilterExpressionBuilder().eq("doc_uuid", doc.getDocUuid()).build());
             log.info("Deleted from vector store: docUuid={}", doc.getDocUuid());
         } catch (Exception e) {
-            log.warn("Failed to delete from vector store (might not exist or not supported): {}", doc.getDocUuid(), e);
+            log.error("Failed to delete from vector store: {}", doc.getDocUuid(), e);
+            // Throw exception to trigger @Transactional rollback and prevent orphan vectors
+            throw new RuntimeException("Delete from Vector Store failed, database deletion rolled back for consistency",
+                    e);
         }
 
         // 2. Remove file from disk
@@ -237,7 +243,8 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
 
         for (MultipartFile f : files) {
             try {
-                UploadResult r = upload(f, null, overwrite, userId, tags);
+                // Fix AOP self-invocation: Use proxy object instead of 'this'
+                UploadResult r = documentServiceProvider.getObject().upload(f, null, overwrite, userId, tags);
 
                 results.add(UploadItemResult.builder()
                         .success(true)
@@ -281,8 +288,10 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
 
     @Override
     public List<String> getAllTags() {
-        // Query all documents that have tags
+        // Query all documents that have tags, ONLY selecting the tags field to prevent
+        // OOM
         List<Document> docs = this.lambdaQuery()
+                .select(Document::getTags)
                 .isNotNull(Document::getTags)
                 .list();
 
