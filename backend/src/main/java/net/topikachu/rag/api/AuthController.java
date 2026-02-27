@@ -3,7 +3,7 @@ package net.topikachu.rag.api;
 import net.topikachu.rag.common.AjaxResult;
 import net.topikachu.rag.service.SysUserService;
 import net.topikachu.rag.service.TokenService;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.RequiredArgsConstructor;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.util.StringUtils;
@@ -14,16 +14,14 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/v1/auth")
+@RequiredArgsConstructor
 public class AuthController {
 
-    @Autowired
-    private TokenService tokenService;
+    private final TokenService tokenService;
 
-    @Autowired
-    private SysUserService sysUserService;
+    private final SysUserService sysUserService;
 
-    @Autowired
-    private JwtDecoder jwtDecoder;
+    private final JwtDecoder jwtDecoder;
 
     @PostMapping("/login")
     public AjaxResult login(@RequestBody Map<String, String> body) {

@@ -10,7 +10,7 @@ import net.topikachu.rag.business.document.vo.BatchUploadResponse;
 import net.topikachu.rag.business.document.vo.UploadItemResult;
 import net.topikachu.rag.business.document.vo.UploadResult;
 import net.topikachu.rag.service.etl.EtlPipeline;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -32,16 +32,14 @@ import java.util.stream.Collectors;
 
 @Service
 @Slf4j
+@RequiredArgsConstructor
 public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> implements DocumentService {
 
-    @Autowired
-    private DocumentMapper documentMapper;
+    private final DocumentMapper documentMapper;
 
-    @Autowired
-    private EtlPipeline etlPipeline;
+    private final EtlPipeline etlPipeline;
 
-    @Autowired
-    private VectorStore vectorStore;
+    private final VectorStore vectorStore;
 
     @Value("${rag.upload.max-size-bytes:52428800}")
     private long maxSizeBytes;
