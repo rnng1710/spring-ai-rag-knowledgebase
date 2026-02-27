@@ -37,6 +37,12 @@ public class EtlPipeline {
 	private final org.springframework.data.redis.core.StringRedisTemplate redisTemplate;
 	private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
+	@org.springframework.beans.factory.annotation.Value("${rag.etl.timeout.read-split-seconds:60}")
+	private long readSplitTimeoutSeconds;
+
+	@org.springframework.beans.factory.annotation.Value("${rag.etl.timeout.vectorize-seconds:300}")
+	private long vectorizeTimeoutSeconds;
+
 	public EtlPipeline(HybridVectorWriter hybridVectorWriter,
 			TextSplitter textSplitter,
 			DocReader documentReader,
@@ -120,6 +126,7 @@ public class EtlPipeline {
 							.then(Mono.fromCallable(() -> textSplitter.apply(docs))
 									.subscribeOn(Schedulers.boundedElastic()));
 				})
+				.timeout(java.time.Duration.ofSeconds(readSplitTimeoutSeconds))
 				.flatMap(splitDocs -> {
 					// 3. Vectorizing - Use HybridVectorWriter for dual vector storage
 					return publishStatus(docUuid, userId, DocumentStatus.VECTORIZING, "Writing to Vector Store...")
@@ -131,6 +138,7 @@ public class EtlPipeline {
 								return Mono.empty();
 							}).subscribeOn(Schedulers.boundedElastic()));
 				})
+				.timeout(java.time.Duration.ofSeconds(vectorizeTimeoutSeconds))
 				.then(completeStatus(docUuid, userId))
 				.doOnSuccess(v -> log.info("IngestionByPath finished: {}", path))
 				.doOnError(e -> {
