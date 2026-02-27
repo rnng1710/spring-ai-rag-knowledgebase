@@ -1,0 +1,50 @@
+[INFO] Scanning for projects...
+[INFO] 
+[INFO] -------------------------< net.topikachu:rag >--------------------------
+[INFO] Building rag 0.0.1-SNAPSHOT
+[INFO]   from pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- dependency:3.6.1:copy (copy-opentelemetry-javaagent) @ rag ---
+[INFO] Configured Artifact: io.opentelemetry.javaagent:opentelemetry-javaagent:2.16.0:jar
+[INFO] io.opentelemetry.javaagent:opentelemetry-javaagent:2.16.0:jar already exists in D:\soft\java\javaFile\spring-ai-rag-knowledgebase\backend\target\otel
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ rag ---
+[INFO] Copying 4 resources from src\main\resources to target\classes
+[INFO] Copying 5 resources from src\main\resources to target\classes
+[INFO] 
+[INFO] --- compiler:3.14.0:compile (default-compile) @ rag ---
+[INFO] Recompiling the module because of changed source code.
+[INFO] Compiling 44 source files with javac [debug parameters release 17] to target\classes
+[INFO] /D:/soft/java/javaFile/spring-ai-rag-knowledgebase/backend/src/main/java/net/topikachu/rag/ai/memory/RedisChatMemoryRepositoryConfiguration.java: D:\soft\java\javaFile\spring-ai-rag-knowledgebase\backend\src\main\java\net\topikachu\rag\ai\memory\RedisChatMemoryRepositoryConfiguration.javaʹ�û򸲸����ѹ�ʱ�� API��
+[INFO] /D:/soft/java/javaFile/spring-ai-rag-knowledgebase/backend/src/main/java/net/topikachu/rag/ai/memory/RedisChatMemoryRepositoryConfiguration.java: �й���ϸ��Ϣ, ��ʹ�� -Xlint:deprecation ���±��롣
+[INFO] /D:/soft/java/javaFile/spring-ai-rag-knowledgebase/backend/src/main/java/net/topikachu/rag/ai/memory/RedisChatMemoryRepository.java: ĳЩ�����ļ�ʹ����δ�����򲻰�ȫ�Ĳ�����
+[INFO] /D:/soft/java/javaFile/spring-ai-rag-knowledgebase/backend/src/main/java/net/topikachu/rag/ai/memory/RedisChatMemoryRepository.java: �й���ϸ��Ϣ, ��ʹ�� -Xlint:unchecked ���±��롣
+[INFO] -------------------------------------------------------------
+[WARNING] COMPILATION WARNING : 
+[INFO] -------------------------------------------------------------
+[WARNING] /D:/soft/java/javaFile/spring-ai-rag-knowledgebase/backend/src/main/java/net/topikachu/rag/business/document/entity/Document.java:[8,1] Generating equals/hashCode implementation but without a call to superclass, even though this class does not extend java.lang.Object. If this is intentional, add '@EqualsAndHashCode(callSuper=false)' to your type.
+[INFO] 1 warning
+[INFO] -------------------------------------------------------------
+[INFO] -------------------------------------------------------------
+[ERROR] COMPILATION ERROR : 
+[INFO] -------------------------------------------------------------
+[ERROR] /D:/soft/java/javaFile/spring-ai-rag-knowledgebase/backend/src/main/java/net/topikachu/rag/service/chat/ChatService.java:[179,53] ��lambda ����ʽ���õı��ر������������ձ�����ʵ���ϵ����ձ���
+[INFO] 1 error
+[INFO] -------------------------------------------------------------
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD FAILURE
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  5.661 s
+[INFO] Finished at: 2026-02-23T20:49:57+08:00
+[INFO] ------------------------------------------------------------------------
+[ERROR] Failed to execute goal org.apache.maven.plugins:maven-compiler-plugin:3.14.0:compile (default-compile) on project rag: Compilation failure
+[ERROR] /D:/soft/java/javaFile/spring-ai-rag-knowledgebase/backend/src/main/java/net/topikachu/rag/service/chat/ChatService.java:[179,53] ��lambda ����ʽ���õı��ر������������ձ�����ʵ���ϵ����ձ���
+[ERROR] 
+[ERROR] -> [Help 1]
+[ERROR] 
+[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.
+[ERROR] Re-run Maven using the -X switch to enable full debug logging.
+[ERROR] 
+[ERROR] For more information about the errors and possible solutions, please read the following articles:
+[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/MojoFailureException
