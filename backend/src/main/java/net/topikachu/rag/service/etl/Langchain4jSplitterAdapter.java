@@ -1,0 +1,56 @@
+package net.topikachu.rag.service.etl;
+
+import dev.langchain4j.data.document.splitter.DocumentSplitters;
+import dev.langchain4j.data.segment.TextSegment;
+import org.springframework.ai.document.Document;
+import org.springframework.ai.transformer.splitter.TextSplitter;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+public class Langchain4jSplitterAdapter extends TextSplitter {
+
+    private final dev.langchain4j.data.document.DocumentSplitter internalSplitter;
+
+    public Langchain4jSplitterAdapter(int chunkSize, int chunkOverlap) {
+        // 使用 LangChain4j 的递归切分器
+        this.internalSplitter = DocumentSplitters.recursive(chunkSize, chunkOverlap);
+    }
+
+    @Override
+    protected List<String> splitText(String text) {
+        dev.langchain4j.data.document.Document lcDoc = dev.langchain4j.data.document.Document.from(text);
+        return internalSplitter.split(lcDoc).stream()
+                .map(TextSegment::text)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public List<Document> apply(List<Document> documents) {
+        return documents.stream()
+                .flatMap(springDoc -> {
+                    // 1. 转换 Metadata: Spring AI (Map<String, Object>) -> LangChain4j (Map<String,
+                    // String>)
+                    Map<String, String> lcMetadata = new HashMap<>();
+                    if (springDoc.getMetadata() != null) {
+                        springDoc.getMetadata().forEach((k, v) -> lcMetadata.put(k, v != null ? v.toString() : ""));
+                    }
+
+                    dev.langchain4j.data.document.Document lcDoc = dev.langchain4j.data.document.Document
+                            .from(springDoc.getText(), dev.langchain4j.data.document.Metadata.from(lcMetadata));
+
+                    // 2. 核心切分
+                    List<TextSegment> segments = internalSplitter.split(lcDoc);
+
+                    // 3. 结果转换与扁平化 (修复 Java 编译流类型报错)
+                    // 完全摒弃 LangChain4j 残缺的 String 元数据，直接闭包引用 Spring 传进来的原生高维元数据
+                    return segments.stream().map(segment -> {
+                        Map<String, Object> springMetadata = new HashMap<>(springDoc.getMetadata());
+                        return new Document(segment.text(), springMetadata);
+                    });
+                })
+                .collect(Collectors.toList()); // 最终聚合成一维 List<Document>要求的签名
+    }
+}

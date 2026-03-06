@@ -30,7 +30,7 @@ public class RerankService {
     private final RestTemplate restTemplate = new RestTemplate();
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    //TODO:: 重构为非阻塞的重排序
+    // TODO:: 重构为非阻塞的重排序
     @io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker(name = "rerankService", fallbackMethod = "rerankFallback")
     @io.github.resilience4j.bulkhead.annotation.Bulkhead(name = "rerankService", type = io.github.resilience4j.bulkhead.annotation.Bulkhead.Type.SEMAPHORE, fallbackMethod = "rerankFallback")
     public List<Document> rerank(String query, List<Document> docs, int topN) {
@@ -46,10 +46,16 @@ public class RerankService {
                     .map(Document::getText)
                     .collect(Collectors.toList());
 
+            // Manually truncate texts to a safe character limit (e.g. 500 characters)
+            // to avoid silent and unpredictable dropping by the reranker max token limit
+            List<String> truncatedTexts = docTexts.stream()
+                    .map(t -> t.length() > 500 ? t.substring(0, 500) : t)
+                    .collect(Collectors.toList());
+
             Map<String, Object> requestBody = new HashMap<>();
             requestBody.put("query", query);
-            requestBody.put("texts", docTexts); // TEI uses "texts" not "documents"
-            requestBody.put("truncate", true);
+            requestBody.put("texts", truncatedTexts); // TEI uses "texts" not "documents"
+            requestBody.put("truncate", false);
 
             // Prepare headers
             HttpHeaders headers = new HttpHeaders();

@@ -3,8 +3,9 @@ package net.topikachu.rag.service.chat;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
+import net.topikachu.rag.service.chat.strategy.ChatModelStrategy;
+import net.topikachu.rag.service.chat.strategy.ChatModelStrategyFactory;
 import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -21,11 +22,10 @@ import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 @Slf4j
 public class ChatService {
 
-        private final ChatModel chatModel;
         private final ChatMemory chatMemory;
         private final HybridSearchService hybridSearchService;
         private final RerankService rerankService;
-        private final ChatClient chatClient;
+        private final ChatModelStrategyFactory strategyFactory;
         private final MessageChatMemoryAdvisor messageChatMemoryAdvisor;
 
         @Value("${rag.retrieval.hybrid-topk:20}")
@@ -37,23 +37,25 @@ public class ChatService {
         @Value("${rag.retrieval.max-context-chars:4000}")
         private int maxContextChars;
 
-        public ChatService(ChatModel chatModel, ChatMemory chatMemory,
-                        HybridSearchService hybridSearchService, RerankService rerankService) {
-                this.chatModel = chatModel;
+        public ChatService(ChatMemory chatMemory,
+                        HybridSearchService hybridSearchService, RerankService rerankService,
+                        ChatModelStrategyFactory strategyFactory) {
                 this.chatMemory = chatMemory;
                 this.hybridSearchService = hybridSearchService;
                 this.rerankService = rerankService;
+                this.strategyFactory = strategyFactory;
 
                 this.messageChatMemoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory).build();
-                this.chatClient = ChatClient.builder(chatModel).build();
         }
 
         public record ChatStreamResponse(Flux<String> flux, List<Document> sources) {
         }
 
         // TODO:: 精确计算token消耗量
-        public ChatStreamResponse streamWithSources(String userInput, String conversationId, List<String> filterTags) {
-                log.info("Processing query: '{}', conversationId: {}, tags: {}", userInput, conversationId, filterTags);
+        public ChatStreamResponse streamWithSources(String userInput, String conversationId, List<String> filterTags,
+                        String modelId) {
+                log.info("Processing query: '{}', conversationId: {}, tags: {}, modelId: {}", userInput, conversationId,
+                                filterTags, modelId);
 
                 // 1. Hybrid Search (Dense + Sparse with RRF fusion)
                 long searchStart = System.currentTimeMillis();
@@ -89,23 +91,23 @@ public class ChatService {
                         contextBuilder.append(structuredEntry);
                 }
                 String context = contextBuilder.toString();
-                log.debug("Context built with {} chars (max: {})", context.length(), maxContextChars);
+                // log.info("Context built with {} chars (max: {}). Final Context sent to
+                // LLM:\n================================\n{}\n================================",
+                // context.length(), maxContextChars, context);
 
-                // TODO:: 提示词没有调优过
-                // 4. Stream Response
+                // 4. Resolve the strategy and stream response
+                ChatModelStrategy strategy = strategyFactory.getStrategy(modelId);
+                ChatClient chatClient = strategy.getChatClient();
+
                 Flux<String> flux = chatClient.prompt()
-                                .system(s -> s.text(
-                                                "你是一个专业的企业级知识库助手。\n" +
-                                                                "请严格遵守以下规则：\n" +
-                                                                "1. 仅根据提供的 <context> 标签内的信息回答问题。\n" +
-                                                                "2. 如果上下文中没有相关信息，请直接回答“根据已知文档无法回答该问题”，严禁编造。\n" +
-                                                                "3. 回答时请保持客观、简洁。\n\nContext:\n{context}")
+                                .system(s -> s.text(strategy.getSystemPromptTemplate())
                                                 .param("context", context))
                                 .user(userInput)
                                 .advisors(messageChatMemoryAdvisor)
                                 .advisors(spec -> spec.param(CONVERSATION_ID, conversationId))
                                 .stream()
                                 .content();
+                // log.debug("Context built with {} chars", context);
 
                 return new ChatStreamResponse(flux, docs);
         }
@@ -176,6 +178,7 @@ public class ChatService {
                 final String systemPromptText = tempPromptText;
 
                 // 5. Generate Answer (Blocking call for offline evaluation)
+                ChatClient chatClient = strategyFactory.getStrategy("ollama").getChatClient();
                 String generatedAnswer = chatClient.prompt()
                                 .system(s -> s.text(systemPromptText).param("context", contextText))
                                 .user(question)

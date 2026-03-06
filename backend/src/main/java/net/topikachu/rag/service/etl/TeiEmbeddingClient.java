@@ -71,6 +71,24 @@ public class TeiEmbeddingClient {
                 .doOnError(e -> log.error("Dense Embedding extraction failed: {}", e.getMessage()));
     }
 
+    public SortedMap<Long, Float> parseSparse(Map<String, Float> lexicalWeights) {
+        SortedMap<Long, Float> sparseVector = new TreeMap<>();
+        if (lexicalWeights != null) {
+            for (Map.Entry<String, Float> entry : lexicalWeights.entrySet()) {
+                try {
+                    // Keys are tokenizer vocab IDs (e.g., "171815"), parse directly
+                    Long key = Long.parseLong(entry.getKey());
+                    sparseVector.put(key, entry.getValue());
+                } catch (NumberFormatException e) {
+                    // Fallback: hash non-numeric keys
+                    Long key = hashToken(entry.getKey());
+                    sparseVector.put(key, entry.getValue());
+                }
+            }
+        }
+        return sparseVector;
+    }
+
     /**
      * Get Sparse Vector from BGE-M3.
      * Keys are already tokenizer vocabulary IDs (as strings), just parse to Long.
@@ -78,22 +96,10 @@ public class TeiEmbeddingClient {
     public Mono<SortedMap<Long, Float>> embedSparse(String text) {
         return embed(text)
                 .map(response -> {
-                    SortedMap<Long, Float> sparseVector = new TreeMap<>();
                     if (response.sparseVecs() != null && !response.sparseVecs().isEmpty()) {
-                        Map<String, Float> lexicalWeights = response.sparseVecs().get(0);
-                        for (Map.Entry<String, Float> entry : lexicalWeights.entrySet()) {
-                            try {
-                                // Keys are tokenizer vocab IDs (e.g., "171815"), parse directly
-                                Long key = Long.parseLong(entry.getKey());
-                                sparseVector.put(key, entry.getValue());
-                            } catch (NumberFormatException e) {
-                                // Fallback: hash non-numeric keys
-                                Long key = hashToken(entry.getKey());
-                                sparseVector.put(key, entry.getValue());
-                            }
-                        }
+                        return parseSparse(response.sparseVecs().get(0));
                     }
-                    return sparseVector;
+                    return new TreeMap<Long, Float>();
                 })
                 .doOnError(e -> log.error("Sparse Embedding extraction failed: {}", e.getMessage()));
     }
