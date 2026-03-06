@@ -71,24 +71,29 @@ public class HybridVectorWriter {
         return reactor.core.publisher.Flux.fromIterable(documents)
                 .flatMap(doc -> {
                     String content = doc.getText();
-                    // Parallel call to TEI for Dense and Sparse
-                    return reactor.core.publisher.Mono.zip(
-                            teiEmbeddingClient.embedDense(content),
-                            teiEmbeddingClient.embedSparse(content)).map(tuple -> {
-                                List<Float> denseVector = tuple.getT1();
-                                SortedMap<Long, Float> sparseVector = tuple.getT2();
+                    // Single call to TEI for both Dense and Sparse
+                    return teiEmbeddingClient.embed(content).map(response -> {
+                        List<Float> denseVector = Collections.emptyList();
+                        if (response.denseVecs() != null && !response.denseVecs().isEmpty()) {
+                            denseVector = response.denseVecs().get(0);
+                        }
 
-                                String docId = doc.getId() != null ? doc.getId() : UUID.randomUUID().toString();
+                        SortedMap<Long, Float> sparseVector = new TreeMap<>();
+                        if (response.sparseVecs() != null && !response.sparseVecs().isEmpty()) {
+                            sparseVector = teiEmbeddingClient.parseSparse(response.sparseVecs().get(0));
+                        }
 
-                                JsonObject row = new JsonObject();
-                                row.addProperty("doc_id", docId);
-                                row.addProperty("content", content);
-                                row.add("metadata", gson.toJsonTree(doc.getMetadata()));
-                                row.add("embedding", gson.toJsonTree(denseVector));
-                                row.add("sparse_vector", gson.toJsonTree(sparseVector));
+                        String docId = doc.getId() != null ? doc.getId() : UUID.randomUUID().toString();
 
-                                return row;
-                            });
+                        JsonObject row = new JsonObject();
+                        row.addProperty("doc_id", docId);
+                        row.addProperty("content", content);
+                        row.add("metadata", gson.toJsonTree(doc.getMetadata()));
+                        row.add("embedding", gson.toJsonTree(denseVector));
+                        row.add("sparse_vector", gson.toJsonTree(sparseVector));
+
+                        return row;
+                    });
                 }, 4) // Concurrency control: 4 parallel requests to TEI
                 .collectList()
                 .flatMap(rows -> reactor.core.publisher.Mono.fromRunnable(() -> {

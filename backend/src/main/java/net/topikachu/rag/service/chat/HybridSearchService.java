@@ -91,7 +91,7 @@ public class HybridSearchService {
             // Build filter expression
             String filterExpr = null;
             if (filterTags != null && !filterTags.isEmpty()) {
-                filterExpr = String.format("JSON_CONTAINS(metadata, '\"%s\"', '$.tags')", filterTags.get(0));
+                filterExpr = String.format("JSON_CONTAINS(metadata[\"tags\"], \"%s\")", filterTags.get(0));
             }
 
             if (!useSparse) {
@@ -117,48 +117,53 @@ public class HybridSearchService {
             } else {
                 // V1+: Hybrid Search. Use HybridSearchReq with RRF.
                 log.debug("Executing V1+ HybridSearchReq for query: {}", query);
-                return reactor.core.publisher.Mono.zip(
-                        teiEmbeddingClient.embedDense(query),
-                        teiEmbeddingClient.embedSparse(query)).map(tuple -> {
-                            List<Float> denseVector = tuple.getT1();
-                            SortedMap<Long, Float> sparseMap = tuple.getT2();
+                return teiEmbeddingClient.embed(query).map(response -> {
+                    List<Float> denseVector = Collections.emptyList();
+                    if (response.denseVecs() != null && !response.denseVecs().isEmpty()) {
+                        denseVector = response.denseVecs().get(0);
+                    }
 
-                            FloatVec denseVec = new FloatVec(denseVector);
-                            SparseFloatVec sparseVec = new SparseFloatVec(sparseMap);
+                    SortedMap<Long, Float> sparseMap = new TreeMap<>();
+                    if (response.sparseVecs() != null && !response.sparseVecs().isEmpty()) {
+                        sparseMap = teiEmbeddingClient.parseSparse(response.sparseVecs().get(0));
+                    }
 
-                            AnnSearchReq.AnnSearchReqBuilder<?, ?> denseReqBuilder = AnnSearchReq.builder()
-                                    .vectorFieldName("embedding")
-                                    .vectors(Collections.singletonList(denseVec))
-                                    .topK(denseTopK);
+                    FloatVec denseVec = new FloatVec(denseVector);
+                    SparseFloatVec sparseVec = new SparseFloatVec(sparseMap);
 
-                            AnnSearchReq.AnnSearchReqBuilder<?, ?> sparseReqBuilder = AnnSearchReq.builder()
-                                    .vectorFieldName("sparse_vector")
-                                    .vectors(Collections.singletonList(sparseVec))
-                                    .topK(denseTopK);
+                    AnnSearchReq.AnnSearchReqBuilder<?, ?> denseReqBuilder = AnnSearchReq.builder()
+                            .vectorFieldName("embedding")
+                            .vectors(Collections.singletonList(denseVec))
+                            .topK(denseTopK);
 
-                            // Note: for AnnSearchReq, the builder method is expr(), not filter()
-                            if (filterTags != null && !filterTags.isEmpty()) {
-                                String lambdaFilterExpr = String.format("JSON_CONTAINS(metadata, '\"%s\"', '$.tags')",
-                                        filterTags.get(0));
-                                denseReqBuilder.expr(lambdaFilterExpr);
-                                sparseReqBuilder.expr(lambdaFilterExpr);
-                            }
+                    AnnSearchReq.AnnSearchReqBuilder<?, ?> sparseReqBuilder = AnnSearchReq.builder()
+                            .vectorFieldName("sparse_vector")
+                            .vectors(Collections.singletonList(sparseVec))
+                            .topK(denseTopK);
 
-                            AnnSearchReq denseReq = denseReqBuilder.build();
-                            AnnSearchReq sparseReq = sparseReqBuilder.build();
+                    // Note: for AnnSearchReq, the builder method is expr(), not filter()
+                    if (filterTags != null && !filterTags.isEmpty()) {
+                        String lambdaFilterExpr = String.format("JSON_CONTAINS(metadata[\"tags\"], \"%s\")",
+                                filterTags.get(0));
+                        denseReqBuilder.expr(lambdaFilterExpr);
+                        sparseReqBuilder.expr(lambdaFilterExpr);
+                    }
 
-                            return HybridSearchReq.builder()
-                                    .collectionName(collectionName)
-                                    .searchRequests(Arrays.asList(denseReq, sparseReq))
-                                    .ranker(new RRFRanker(rrfK))
-                                    .topK(topK)
-                                    .outFields(Arrays.asList("doc_id", "content", "metadata"))
-                                    .build();
+                    AnnSearchReq denseReq = denseReqBuilder.build();
+                    AnnSearchReq sparseReq = sparseReqBuilder.build();
 
-                        }).map(hybridReq -> {
-                            SearchResp response = milvusClient.hybridSearch(hybridReq);
-                            return convertToDocuments(response);
-                        }).block(Duration.ofSeconds(timeoutSeconds));
+                    return HybridSearchReq.builder()
+                            .collectionName(collectionName)
+                            .searchRequests(Arrays.asList(denseReq, sparseReq))
+                            .ranker(new RRFRanker(rrfK))
+                            .topK(topK)
+                            .outFields(Arrays.asList("doc_id", "content", "metadata"))
+                            .build();
+
+                }).map(hybridReq -> {
+                    SearchResp response = milvusClient.hybridSearch(hybridReq);
+                    return convertToDocuments(response);
+                }).block(Duration.ofSeconds(timeoutSeconds));
             }
 
         } catch (Exception e) {

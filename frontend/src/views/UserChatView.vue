@@ -54,10 +54,16 @@
                     @keydown.enter.exact.prevent="startChat"
                 ></textarea>
                 <div class="chat-input-actions">
-                    <div class="input-tip">Topikachu RAG can make mistakes. Check important info.</div>
-                     <el-button type="primary" circle class="send-btn" @click="startChat" :loading="loading" :disabled="!question.trim()">
-                        <el-icon><Position /></el-icon>
-                     </el-button>
+                     <div class="input-tip">Topikachu RAG can make mistakes. Check important info.</div>
+                     <div style="display:flex; gap:10px; align-items:center">
+                         <el-select v-model="selectedModel" size="small" style="width: 120px;">
+                             <el-option label="Qwen 2.5" value="ollama" />
+                             <el-option label="DeepSeek" value="deepseek" />
+                         </el-select>
+                         <el-button type="primary" circle class="send-btn" @click="startChat" :loading="loading" :disabled="!question.trim()">
+                            <el-icon><Position /></el-icon>
+                         </el-button>
+                     </div>
                 </div>
             </div>
           </div>
@@ -93,7 +99,7 @@
                             style="margin-right:12px"
                          />
                          
-                         <span style="font-weight:600; font-size:14px; margin-top: 2px;">Gemini-RAG</span>
+                         <span style="font-weight:600; font-size:14px; margin-top: 2px;">{{ msg.modelName || 'Assistant' }}</span>
                     </div>
 
                     <div v-if="msg.content" class="message-content" style="white-space: pre-wrap;" v-html="renderMarkdown(msg.content)"></div>
@@ -126,6 +132,10 @@
                          <el-tooltip content="Clear Chat" placement="top">
                             <el-button circle size="small" @click="reset" :icon="Close" style="border:none; background:transparent;" />
                          </el-tooltip>
+                         <el-select v-model="selectedModel" size="small" style="width: 120px;">
+                             <el-option label="Qwen 2.5" value="ollama" />
+                             <el-option label="DeepSeek" value="deepseek" />
+                         </el-select>
                          <el-button type="primary" circle class="send-btn" @click="startChat" :loading="loading" :disabled="!question.trim()">
                             <el-icon><Position /></el-icon>
                          </el-button>
@@ -157,10 +167,12 @@ const username = ref(localStorage.getItem("auth_user") || "user");
 const conversationId = ref(`conv-${Math.random().toString(36).slice(2, 8)}`);
 const question = ref("");
 const selectedTag = ref("");
+const selectedModel = ref("ollama");
 
 interface Message {
     role: 'user' | 'assistant';
     content: string;
+    modelName?: string;
     sources?: any[];
 }
 
@@ -193,19 +205,21 @@ const startChat = async () => {
   const userInput = question.value;
   question.value = "";
   
+  const currentModelName = selectedModel.value === 'deepseek' ? 'DeepSeek' : 'Qwen 2.5';
+  
   // Add User Message
   messages.value.push({ role: 'user', content: userInput });
   scrollBottom();
   
   // Add Assistant Placeholder
-  const assistantMsg = reactive<Message>({ role: 'assistant', content: "", sources: [] });
+  const assistantMsg = reactive<Message>({ role: 'assistant', content: "", modelName: currentModelName, sources: [] });
   messages.value.push(assistantMsg);
   
   loading.value = true;
   try {
     await streamSsePost(
       apiUrl(`/api/v1/chat?conversationId=${encodeURIComponent(conversationId.value)}`),
-      { userInput, tags: selectedTag.value ? [selectedTag.value] : [] },
+      { userInput, tags: selectedTag.value ? [selectedTag.value] : [], modelId: selectedModel.value },
       (event, data) => {
         if (event === 'sources') {
             try {

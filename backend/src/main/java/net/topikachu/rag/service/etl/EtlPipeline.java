@@ -107,13 +107,36 @@ public class EtlPipeline {
 
 						List<Document> docs = reader.get();
 
+						// ======== 优化：单页保留与页首锚点注入 (Page-Document Hybrid) ========
+						if (path.toString().toLowerCase().endsWith(".pdf") && !docs.isEmpty()) {
+							java.util.List<Document> pageDocs = new java.util.ArrayList<>();
+							int pageCounter = 1;
+							for (Document pageDoc : docs) {
+								// 从元数据获取真实页码，若无则使用计数器
+								Object pageNumObj = pageDoc.getMetadata().get("page_number");
+								String pageNumStr = pageNumObj != null ? pageNumObj.toString()
+										: String.valueOf(pageCounter);
+
+								// ⭐ 注入给大模型阅读的物理页眉锚点
+								String anchoredText = "[--- 以下为文件第 " + pageNumStr + " 页内容 ---]\n" + pageDoc.getText();
+
+								// 构造带有锚点且继承了原始 Metadata 的独立页 Document
+								java.util.Map<String, Object> pageMetadata = new java.util.HashMap<>(
+										pageDoc.getMetadata());
+								pageDocs.add(new Document(anchoredText, pageMetadata));
+								pageCounter++;
+							}
+							docs = pageDocs;
+						}
+						// ===================================================================
+
 						// 2. 注入 Metadata (Tags, UUID, FileName)
 						for (Document doc : docs) {
 							doc.getMetadata().put("doc_uuid", docUuid);
 							doc.getMetadata().put("file_name", path.getFileName().toString());
 							if (tags != null && !tags.isEmpty()) {
-								// Store as comma-separated string for Milvus filter compatibility
-								doc.getMetadata().put("tags", String.join(",", tags));
+								// Store as List object for Milvus JSON_CONTAINS array compatibility
+								doc.getMetadata().put("tags", tags);
 							}
 						}
 						return docs;

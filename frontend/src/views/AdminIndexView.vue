@@ -5,7 +5,7 @@
     </div>
     <div class="grid grid-2">
       <div class="card">
-        <div class="muted">Trigger /api/v1/index and stream file paths</div>
+        <div class="muted"></div>
         <el-form label-width="120px">
           <el-button type="primary" @click="startIndexing" :loading="loading">Run Index</el-button>
         </el-form>
