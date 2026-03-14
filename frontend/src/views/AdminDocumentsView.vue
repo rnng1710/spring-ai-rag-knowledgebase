@@ -3,21 +3,21 @@
     <!-- Search Area -->
     <el-card shadow="never" class="search-card">
       <el-form :inline="true" @submit.prevent="handleSearch">
-        <el-form-item label="Filename">
-          <el-input v-model="query.keyword" placeholder="Search filename" clearable @clear="handleSearch" />
+        <el-form-item :label="t('docs.filename')">
+          <el-input v-model="query.keyword" :placeholder="t('docs.searchFilename')" clearable @clear="handleSearch" />
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" @click="handleSearch" :icon="Search">Search</el-button>
-          <el-button @click="resetSearch" :icon="Refresh">Reset</el-button>
+          <el-button type="primary" @click="handleSearch" :icon="Search">{{ t("common.search") }}</el-button>
+          <el-button @click="resetSearch" :icon="Refresh">{{ t("common.reset") }}</el-button>
         </el-form-item>
       </el-form>
     </el-card>
 
     <!-- Toolbar -->
     <div class="toolbar">
-      <el-button type="primary" :icon="Plus" @click="openUploadDialog">Upload</el-button>
+      <el-button type="primary" :icon="Plus" @click="openUploadDialog">{{ t("common.upload") }}</el-button>
       <el-button type="danger" :icon="Delete" :disabled="selectedIds.length === 0" @click="handleBatchDelete">
-        Batch Delete
+        {{ t("docs.batchDelete") }}
       </el-button>
     </div>
 
@@ -35,16 +35,16 @@
           {{ (pagination.current - 1) * pagination.size + scope.$index + 1 }}
         </template>
       </el-table-column>
-      <el-table-column prop="fileName" label="Filename" min-width="200" />
-      <el-table-column prop="status" label="Status" width="120">
+      <el-table-column prop="fileName" :label="t('docs.filename')" min-width="200" />
+      <el-table-column prop="status" :label="t('common.status')" width="120">
         <template #default="{ row }">
-            <el-tag :type="getStatusType(row.status)">{{ row.status }}</el-tag>
+            <el-tag :type="getStatusType(row.status)">{{ getStatusLabel(row.status) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="createDate" label="Created At" width="180" />
-      <el-table-column label="Actions" width="100" fixed="right">
+      <el-table-column prop="createDate" :label="t('common.createdAt')" width="180" />
+      <el-table-column :label="t('common.actions')" width="100" fixed="right">
         <template #default="{ row }">
-          <el-button link type="danger" size="small" @click="handleDelete(row)">Delete</el-button>
+          <el-button link type="danger" size="small" @click="handleDelete(row)">{{ t("common.delete") }}</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -63,65 +63,65 @@
     </div>
 
     <!-- Upload Dialog -->
-    <el-dialog v-model="dialogVisible" title="Upload Documents" width="600px" destroy-on-close>
+    <el-dialog v-model="dialogVisible" :title="t('docs.uploadDocuments')" width="600px" destroy-on-close>
       <el-tabs v-model="activeTab">
-        <el-tab-pane label="Single File" name="single">
+      <el-tab-pane :label="t('docs.singleFile')" name="single">
            <el-form label-width="100px" @submit.prevent>
-              <el-form-item label="File">
+          <el-form-item :label="t('common.file')">
                  <input type="file" ref="singleFileInput" @change="onSingleFileChange" />
               </el-form-item>
-              <el-form-item label="Rename">
-                  <el-input v-model="uploadForm.fileName" placeholder="Optional" />
+          <el-form-item :label="t('docs.rename')">
+            <el-input v-model="uploadForm.fileName" :placeholder="t('common.optional')" />
               </el-form-item>
-              <el-form-item label="Overwrite">
+          <el-form-item :label="t('common.overwrite')">
                   <el-switch v-model="uploadForm.overwrite" />
               </el-form-item>
-              <el-form-item label="Tags">
+          <el-form-item :label="t('common.tags')">
                    <el-select
                       v-model="uploadForm.tagsInput"
                       multiple
                       filterable
                       allow-create
                       default-first-option
-                      placeholder="Select or Create Tags"
+              :placeholder="t('docs.selectOrCreateTags')"
                    >
                      <el-option v-for="tag in tagsOptions" :key="tag" :label="tag" :value="tag" />
                    </el-select>
               </el-form-item>
            </el-form>
         </el-tab-pane>
-        <el-tab-pane label="Batch Files" name="batch">
+      <el-tab-pane :label="t('docs.batchFiles')" name="batch">
             <el-form label-width="100px" @submit.prevent>
-              <el-form-item label="Files">
+          <el-form-item :label="t('common.files')">
                  <input type="file" multiple ref="batchFileInput" @change="onBatchFileChange" />
-                 <div class="tip">Selected: {{ batchFiles.length }} files</div>
+           <div class="tip">{{ t("docs.selectedFiles", { count: batchFiles.length }) }}</div>
               </el-form-item>
-              <el-form-item label="Overwrite">
+          <el-form-item :label="t('common.overwrite')">
                   <el-switch v-model="uploadForm.overwrite" />
               </el-form-item>
-              <el-form-item label="Tags">
-                  <el-input v-model="uploadForm.tagsInput" placeholder="Comma separated, e.g. finance" />
+          <el-form-item :label="t('common.tags')">
+            <el-input v-model="uploadForm.tagsInput" :placeholder="t('docs.commaTagExample')" />
               </el-form-item>
            </el-form>
         </el-tab-pane>
-        <el-tab-pane label="Folder" name="folder">
+      <el-tab-pane :label="t('common.folder')" name="folder">
              <el-form label-width="100px" @submit.prevent>
-              <el-form-item label="Folder">
+          <el-form-item :label="t('common.folder')">
                  <input type="file" webkitdirectory directory ref="folderInput" @change="onFolderChange" />
-                 <div class="tip">Selected: {{ folderFiles.length }} files</div>
+           <div class="tip">{{ t("docs.selectedFiles", { count: folderFiles.length }) }}</div>
               </el-form-item>
-              <el-form-item label="Overwrite">
+          <el-form-item :label="t('common.overwrite')">
                   <el-switch v-model="uploadForm.overwrite" />
               </el-form-item>
-              <el-form-item label="Tags">
-                  <el-input v-model="uploadForm.tagsInput" placeholder="Comma separated, e.g. finance" />
+          <el-form-item :label="t('common.tags')">
+            <el-input v-model="uploadForm.tagsInput" :placeholder="t('docs.commaTagExample')" />
               </el-form-item>
            </el-form>
         </el-tab-pane>
       </el-tabs>
       <template #footer>
-        <el-button @click="dialogVisible = false">Cancel</el-button>
-        <el-button type="primary" :loading="uploading" @click="submitUpload">Upload</el-button>
+      <el-button @click="dialogVisible = false">{{ t("common.cancel") }}</el-button>
+      <el-button type="primary" :loading="uploading" @click="submitUpload">{{ t("common.upload") }}</el-button>
       </template>
       
       <!-- Upload Log Area -->
@@ -138,6 +138,9 @@ import { Search, Refresh, Plus, Delete } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { listDocs, deleteDoc, deleteDocsBatch, uploadSingle, uploadBatch, getAllTags, type Doc } from "../api/docs";
 import { connectSse, disconnectSse, type EtlMessage } from "../api/sse-fetch";
+import { useI18n } from "vue-i18n";
+
+const { t, te } = useI18n();
 
 // --- State ---
 const loading = ref(false);
@@ -205,7 +208,7 @@ const loadData = async () => {
     tableData.value = res.records;
     pagination.total = res.total;
   } catch (e: any) {
-    ElMessage.error(e.message);
+    ElMessage.error(e.message || t("docs.loadFailed"));
   } finally {
     loading.value = false;
   }
@@ -227,28 +230,33 @@ const handleSelectionChange = (selection: Doc[]) => {
 
 const handleDelete = async (row: Doc) => {
     try {
-        await ElMessageBox.confirm(`Are you sure to delete "${row.fileName}"?`, "Warning", {
+    await ElMessageBox.confirm(t("docs.deleteConfirm", { name: row.fileName }), t("common.warning"), {
             type: "warning"
         });
         await deleteDoc(row.id);
-        ElMessage.success("Deleted successfully");
+    ElMessage.success(t("docs.deletedSuccessfully"));
         loadData();
     } catch (e) {
-        if(e !== 'cancel') ElMessage.error("Delete failed");
+    if(e !== 'cancel') ElMessage.error(t("docs.deleteFailed"));
     }
 };
 
 const handleBatchDelete = async () => {
     try {
-        await ElMessageBox.confirm(`Are you sure to delete ${selectedIds.value.length} items?`, "Warning", {
+    await ElMessageBox.confirm(t("docs.deleteCountConfirm", { count: selectedIds.value.length }), t("common.warning"), {
             type: "warning"
         });
         await deleteDocsBatch(selectedIds.value);
-        ElMessage.success("Batch deleted successfully");
+    ElMessage.success(t("docs.batchDeletedSuccessfully"));
         loadData();
     } catch (e) {
-         if(e !== 'cancel') ElMessage.error("Batch delete failed");
+     if(e !== 'cancel') ElMessage.error(t("docs.batchDeleteFailed"));
     }
+};
+
+const getStatusLabel = (status: string) => {
+  const key = `docs.status.${status}`;
+  return te(key) ? t(key) : status;
 };
 
 const getStatusType = (status: string) => {
@@ -298,27 +306,27 @@ const submitUpload = async () => {
     try {
         if (activeTab.value === 'single') {
             if (!singleFile.value) {
-                ElMessage.warning("Please select a file");
+              ElMessage.warning(t("docs.pleaseSelectFile"));
                 return;
             }
             const res = await uploadSingle(singleFile.value, uploadForm.fileName, uploadForm.overwrite, tags);
             if (res.code === 0) {
                  const data = res.data;
                  if (data.created) {
-                     ElMessage.success(`Upload Success: ${data.fileName}`);
+                   ElMessage.success(t("docs.uploadSuccess", { name: data.fileName }));
                  } else {
-                     ElMessage.info(`File already exists: ${data.fileName} (Status: ${data.status})`);
+                   ElMessage.info(t("docs.fileExists", { name: data.fileName, status: data.status }));
                  }
                  loadData();
                  dialogVisible.value = false; // Auto close
             } else {
-                 addLog(`Failed: ${res.msg}`, 'error');
+                 addLog(t("docs.failed", { msg: res.msg }), 'error');
             }
         } else {
             // Batch or Folder
             const files = activeTab.value === 'batch' ? batchFiles.value : folderFiles.value;
             if (files.length === 0) {
-                ElMessage.warning("Please select files");
+              ElMessage.warning(t("docs.pleaseSelectFiles"));
                 return;
             }
             
@@ -343,21 +351,21 @@ const submitUpload = async () => {
                  }
                  
                  if (hasNew) {
-                     ElMessage.success(`Batch Upload Completed. New: ${data.successCount - hasExisting}, Existing: ${hasExisting}`);
+                   ElMessage.success(t("docs.batchCompletedNew", { newCount: data.successCount - hasExisting, existingCount: hasExisting }));
                  } else if (hasExisting > 0) {
-                     ElMessage.info(`Batch Completed. All ${hasExisting} files already existed.`);
+                   ElMessage.info(t("docs.batchCompletedExisting", { count: hasExisting }));
                  } else {
-                     ElMessage.warning("Batch Completed with no successful uploads.");
+                   ElMessage.warning(t("docs.batchCompletedNone"));
                  }
 
                  loadData();
                  dialogVisible.value = false; // Auto close
             } else {
-                 addLog(`Batch Failed: ${res.msg}`, 'error');
+                 addLog(t("docs.batchFailed", { msg: res.msg }), 'error');
             }
         }
     } catch (e: any) {
-        addLog(`Error: ${e.message}`, 'error');
+            addLog(t("docs.error", { msg: e.message }), 'error');
     } finally {
         uploading.value = false;
     }

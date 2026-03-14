@@ -5,11 +5,11 @@ import net.topikachu.rag.service.chat.ChatService;
 import net.topikachu.rag.service.etl.EtlPipeline;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
+import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
-import org.springframework.http.codec.ServerSentEvent;
-import java.util.Collections;
+
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -36,32 +36,37 @@ public class RestApi {
 			Principal principal) {
 		var conversationKey = String.format("%s:%s", principal.getName(), conversationId);
 
-		ChatService.ChatStreamResponse response = chatService.streamWithSources(chatRequest.userInput(),
+		return chatService.streamWithSources(
+				chatRequest.userInput(),
 				conversationKey,
-				chatRequest.tags(), chatRequest.modelId());
+				chatRequest.tags(),
+				chatRequest.modelId())
+				.flatMapMany(response -> {
+					List<Map<String, Object>> sourceMetadata = response.sources().stream()
+							.map(doc -> doc.getMetadata())
+							.collect(Collectors.toList());
 
-		// 1. Prepare Source Event
-		List<Map<String, Object>> sourceMetadata = response.sources().stream()
-				.map(doc -> doc.getMetadata())
-				.collect(Collectors.toList());
+					ServerSentEvent<Object> sourceEvent = ServerSentEvent.builder()
+							.event("sources")
+							.data(sourceMetadata)
+							.build();
 
-		ServerSentEvent<Object> sourceEvent = ServerSentEvent.builder()
-				.event("sources")
-				.data(sourceMetadata)
-				.build();
+					Flux<ServerSentEvent<Object>> messageStream = response.flux()
+							.map(content -> ServerSentEvent.builder()
+									.event("message")
+									.data((Object) content)
+									.build());
 
-		// 2. Prepare Message Stream
-		Flux<ServerSentEvent<Object>> messageStream = response.flux()
-				.map(content -> ServerSentEvent.builder()
-						.event("message")
-						.data((Object) content)
-						.build());
-
-		// 3. Concat: Sources -> Message Stream
-		return Flux.concat(
-				Flux.just(sourceEvent),
-				messageStream)
-				.doOnError(exp -> log.error("Error in chat", exp));
+					return Flux.concat(Flux.just(sourceEvent), messageStream);
+				})
+				.onErrorResume(exp -> {
+					log.error("Error in chat", exp);
+					ServerSentEvent<Object> fallbackEvent = ServerSentEvent.builder()
+							.event("message")
+							.data((Object) "系统繁忙，请稍后重试。")
+							.build();
+					return Flux.just(fallbackEvent);
+				});
 	}
 
 	@PostMapping(path = "/index", produces = MediaType.TEXT_EVENT_STREAM_VALUE)

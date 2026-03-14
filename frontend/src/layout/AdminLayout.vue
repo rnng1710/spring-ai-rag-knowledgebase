@@ -2,7 +2,7 @@
   <el-container class="admin-layout">
     <el-aside width="240px" class="admin-aside">
       <div class="logo">
-        <h2>RAG Admin</h2>
+        <h2>{{ t("common.appNameShort") }}</h2>
       </div>
       <el-menu
         :default-active="activeMenu"
@@ -14,21 +14,21 @@
       >
         <el-menu-item index="/admin/index">
           <el-icon><Odometer /></el-icon>
-          <span>Dashboard</span>
+          <span>{{ t("adminLayout.dashboard") }}</span>
         </el-menu-item>
         <el-menu-item index="/admin/documents">
           <el-icon><Document /></el-icon>
-          <span>Documents</span>
+          <span>{{ t("adminLayout.documents") }}</span>
         </el-menu-item>
         <el-menu-item index="/admin/users">
           <el-icon><User /></el-icon>
-          <span>Users</span>
+          <span>{{ t("adminLayout.users") }}</span>
         </el-menu-item>
       </el-menu>
       
       <div class="aside-footer">
         <el-button type="text" @click="logout" class="logout-btn">
-             <el-icon><SwitchButton /></el-icon> Sign Out
+             <el-icon><SwitchButton /></el-icon> {{ t("common.signOut") }}
         </el-button>
       </div>
     </el-aside>
@@ -39,14 +39,15 @@
                 <!-- Breadcrumbs could go here -->
             </div>
       <div class="header-right">
+        <LanguageSwitcher />
         <el-dropdown trigger="click" @command="handleCommand">
-          <span class="el-dropdown-link" style="cursor: pointer; display: flex; align-items: center;">
-            <span style="margin-right:12px">Admin</span>
+          <span class="el-dropdown-link" style="cursor: pointer; display: flex; align-items: center; margin-left: 12px;">
+            <span style="margin-right:12px">{{ username }}</span>
             <el-avatar :size="32" icon="UserFilled" />
           </span>
           <template #dropdown>
             <el-dropdown-menu>
-              <el-dropdown-item command="logout">Sign out</el-dropdown-item>
+              <el-dropdown-item command="logout">{{ t("common.signOut") }}</el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
@@ -62,18 +63,20 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { clearTokens } from "../api/client";
 import { Odometer, Document, SwitchButton, UserFilled, User } from '@element-plus/icons-vue';
+import { clearAuthSession, getAccessToken, getUsernameFromAccessToken } from "../utils/auth";
+import { useI18n } from "vue-i18n";
+import LanguageSwitcher from "../components/LanguageSwitcher.vue";
 
 const route = useRoute();
 const router = useRouter();
+const { t } = useI18n();
 
 const activeMenu = computed(() => route.path);
+const username = computed(() => getUsernameFromAccessToken(getAccessToken()) || localStorage.getItem("auth_user") || "admin");
 
 const logout = () => {
-  clearTokens();
-  localStorage.removeItem("auth_user");
-  localStorage.removeItem("auth_role");
+  clearAuthSession();
   router.push("/login");
 };
 

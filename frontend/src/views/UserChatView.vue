@@ -2,34 +2,32 @@
   <div class="chat-shell">
     <aside class="chat-sidebar">
       <div class="chat-sidebar-header">
-        <div class="chat-title">Campus KB</div>
-        <div class="chat-sub">Signed in as {{ username }}</div>
+        <div class="chat-title">{{ t("common.appName") }}</div>
+        <div class="chat-sub">{{ t("chat.signedInAs", { username }) }}</div>
       </div>
       
       <!-- Knowledge Base Selector -->
       <div class="kb-selector" style="margin-bottom: 20px; padding: 0 12px;">
-          <div style="font-size:12px; color:#444746; margin-bottom:8px; font-weight:500">Knowledge Base (Tag)</div>
-          <el-select v-model="selectedTag" placeholder="Select Knowledge Base" size="small" clearable>
+         <div style="font-size:12px; color:#444746; margin-bottom:8px; font-weight:500">{{ t("chat.kbTag") }}</div>
+         <el-select v-model="selectedTag" :placeholder="t('chat.selectKb')" size="small" clearable>
             <template #prefix><el-icon><Collection /></el-icon></template>
             <el-option v-for="tag in tagsOptions" :key="tag" :label="tag" :value="tag" />
           </el-select>
       </div>
 
       <el-button class="chat-action" @click="reset">
-         <el-icon style="margin-right:8px"><Plus /></el-icon> New chat
+        <el-icon style="margin-right:8px"><Plus /></el-icon> {{ t("chat.newChat") }}
       </el-button>
       
       <div class="chat-history">
-        <div class="chat-history-title">Recent</div>
-        <div class="chat-history-item" @click="reset">New Conversation</div>
+<!--        <div class="chat-history-title">Recent</div>-->
+<!--        <div class="chat-history-item" @click="reset">New Conversation</div>-->
         <!-- Placeholder history items -->
-        <div class="chat-history-item">Campus Guidelines</div>
-        <div class="chat-history-item">Library Hours</div>
       </div>
       
       <div style="margin-top:auto">
           <el-button text @click="logout" style="width:100%; justify-content:flex-start; color:#444746">
-              <el-icon style="margin-right:8px"><SwitchButton /></el-icon> Sign out
+            <el-icon style="margin-right:8px"><SwitchButton /></el-icon> {{ t("common.signOut") }}
           </el-button>
       </div>
     </aside>
@@ -39,8 +37,8 @@
       <!-- Initial State: Centered Greeting & Input -->
       <div v-if="messages.length === 0" class="chat-center-container">
           <div class="chat-greeting">
-              <div class="greeting-text">Hello, {{ username }}</div>
-              <div class="greeting-sub">How can I help you today?</div>
+            <div class="greeting-text">{{ t("chat.hello", { username }) }}</div>
+            <div class="greeting-sub">{{ t("chat.howCanIHelp") }}</div>
           </div>
           
           <div class="chat-input-center-wrapper">
@@ -48,17 +46,18 @@
                 <textarea 
                     v-model="question" 
                     class="chat-input-textarea" 
-                    placeholder="Ask me anything..." 
+                  :placeholder="t('chat.askAnything')" 
                     rows="1"
                     @input="adjustTextareaHeight"
                     @keydown.enter.exact.prevent="startChat"
                 ></textarea>
                 <div class="chat-input-actions">
-                     <div class="input-tip">Topikachu RAG can make mistakes. Check important info.</div>
+                   <div class="input-tip">{{ t("chat.inputTip") }}</div>
                      <div style="display:flex; gap:10px; align-items:center">
                          <el-select v-model="selectedModel" size="small" style="width: 120px;">
                              <el-option label="Qwen 2.5" value="ollama" />
                              <el-option label="DeepSeek" value="deepseek" />
+                             <el-option label="Gemini" value="gemini" />
                          </el-select>
                          <el-button type="primary" circle class="send-btn" @click="startChat" :loading="loading" :disabled="!question.trim()">
                             <el-icon><Position /></el-icon>
@@ -99,17 +98,16 @@
                             style="margin-right:12px"
                          />
                          
-                         <span style="font-weight:600; font-size:14px; margin-top: 2px;">{{ msg.modelName || 'Assistant' }}</span>
+                         <span style="font-weight:600; font-size:14px; margin-top: 2px;">{{ msg.modelName || t("chat.assistant") }}</span>
                     </div>
 
                     <div v-if="msg.content" class="message-content" style="white-space: pre-wrap;" v-html="renderMarkdown(msg.content)"></div>
-                    <div v-else class="message-content" style="color:#909399; font-style:italic">Thinking...</div>
+                      <div v-else class="message-content" style="color:#909399; font-style:italic">{{ t("chat.thinking") }}</div>
                     
                     <!-- Sources -->
                     <div v-if="msg.sources && msg.sources.length > 0" class="message-sources">
                         <div v-for="(source, sIdx) in msg.sources" :key="sIdx" style="font-size: 13px; color: #444746; margin-top: 4px;">
-                            此回答引用自《{{ source.doc_uuid ? (source.file_name || source.source || 'Document') : 'Unknown Source' }}》
-                            <span v-if="source.page_number">第 {{ source.page_number }} 页</span>
+                          {{ formatSourceReference(source) }}
                         </div>
                     </div>
                 </div>
@@ -121,20 +119,21 @@
                 <textarea 
                     v-model="question" 
                     class="chat-input-textarea" 
-                    placeholder="Ask me anything..." 
+                  :placeholder="t('chat.askAnything')" 
                     rows="1"
                     @input="adjustTextareaHeight"
                     @keydown.enter.exact.prevent="startChat"
                 ></textarea>
                 <div class="chat-input-actions">
-                    <div class="input-tip">Topikachu RAG can make mistakes. Check important info.</div>
+                  <div class="input-tip">{{ t("chat.inputTip") }}</div>
                     <div style="display:flex; gap:10px; align-items:center">
-                         <el-tooltip content="Clear Chat" placement="top">
+                     <el-tooltip :content="t('chat.clearChat')" placement="top">
                             <el-button circle size="small" @click="reset" :icon="Close" style="border:none; background:transparent;" />
                          </el-tooltip>
                          <el-select v-model="selectedModel" size="small" style="width: 120px;">
                              <el-option label="Qwen 2.5" value="ollama" />
                              <el-option label="DeepSeek" value="deepseek" />
+                             <el-option label="Gemini" value="gemini" />
                          </el-select>
                          <el-button type="primary" circle class="send-btn" @click="startChat" :loading="loading" :disabled="!question.trim()">
                             <el-icon><Position /></el-icon>
@@ -152,10 +151,12 @@
 <script setup lang="ts">
 import { ref, nextTick, reactive, onMounted } from "vue";
 import { useRouter } from "vue-router";
-import { apiUrl, getAuthHeader, clearTokens } from "../api/client";
+import { apiUrl, getAuthHeader } from "../api/client";
 import { streamSsePost } from "../api/sse";
 import { getAllTags } from "../api/docs";
 import { Plus, SwitchButton, Position, Close, Collection } from "@element-plus/icons-vue";
+import { clearAuthSession, getAccessToken, getUsernameFromAccessToken } from "../utils/auth";
+import { useI18n } from "vue-i18n";
 
 // Simple markdown render
 const renderMarkdown = (text: string) => {
@@ -163,7 +164,8 @@ const renderMarkdown = (text: string) => {
 }
 
 const router = useRouter();
-const username = ref(localStorage.getItem("auth_user") || "user");
+const { t } = useI18n();
+const username = ref(getUsernameFromAccessToken(getAccessToken()) || localStorage.getItem("auth_user") || "user");
 const conversationId = ref(`conv-${Math.random().toString(36).slice(2, 8)}`);
 const question = ref("");
 const selectedTag = ref("");
@@ -199,13 +201,26 @@ const scrollBottom = () => {
     });
 };
 
+const formatSourceReference = (source: any) => {
+  const title = source.doc_uuid ? (source.file_name || source.source || t("chat.document")) : t("chat.unknownSource");
+  if (source.page_number) {
+    return t("chat.sourceReferenceWithPage", { title, page: source.page_number });
+  }
+  return t("chat.sourceReferenceWithoutPage", { title });
+};
+
 const startChat = async () => {
   if(!question.value.trim()) return;
   
   const userInput = question.value;
   question.value = "";
   
-  const currentModelName = selectedModel.value === 'deepseek' ? 'DeepSeek' : 'Qwen 2.5';
+  const modelNameMap: Record<string, string> = {
+    ollama: 'Qwen 2.5',
+    deepseek: 'DeepSeek',
+    gemini: 'Gemini',
+  };
+  const currentModelName = modelNameMap[selectedModel.value] || selectedModel.value;
   
   // Add User Message
   messages.value.push({ role: 'user', content: userInput });
@@ -246,7 +261,7 @@ const startChat = async () => {
       getAuthHeader()
     );
   } catch (err: any) {
-    assistantMsg.content += `\n[Error: ${err?.message || err}]`;
+    assistantMsg.content += `\n[${t("chat.errorPrefix")}: ${err?.message || err}]`;
   } finally {
     loading.value = false;
   }
@@ -259,9 +274,7 @@ const reset = () => {
 };
 
 const logout = () => {
-  clearTokens();
-  localStorage.removeItem("auth_user");
-  localStorage.removeItem("auth_role");
+  clearAuthSession();
   router.push("/login"); 
 };
 </script>

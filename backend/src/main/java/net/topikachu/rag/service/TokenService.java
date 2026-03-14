@@ -24,10 +24,11 @@ public class TokenService {
     @Value("${security.jwt.secret}")
     private String secret;
 
-    // Access Token validity: 2 hours
-    private static final long ACCESS_TOKEN_VALIDITY_SECONDS = 7200;
-    // Refresh Token validity: 7 days
-    private static final long REFRESH_TOKEN_VALIDITY_SECONDS = 604800;
+    @Value("${security.jwt.expiration:3600000}")
+    private long accessTokenValidityMillis;
+
+    @Value("${security.jwt.refresh-expiration:86400000}")
+    private long refreshTokenValidityMillis;
 
     public Map<String, String> generateTokens(String username, String role) {
         try {
@@ -38,7 +39,7 @@ public class TokenService {
                     .subject(username)
                     .issuer("rag-app")
                     .issueTime(new Date())
-                    .expirationTime(Date.from(Instant.now().plus(ACCESS_TOKEN_VALIDITY_SECONDS, ChronoUnit.SECONDS)))
+                    .expirationTime(Date.from(Instant.now().plus(accessTokenValidityMillis, ChronoUnit.MILLIS)))
                     .claim("roles", List.of(role))
                     .build();
 
@@ -51,7 +52,7 @@ public class TokenService {
                     .subject(username)
                     .issuer("rag-app")
                     .issueTime(new Date())
-                    .expirationTime(Date.from(Instant.now().plus(REFRESH_TOKEN_VALIDITY_SECONDS, ChronoUnit.SECONDS)))
+                    .expirationTime(Date.from(Instant.now().plus(refreshTokenValidityMillis, ChronoUnit.MILLIS)))
                     .claim("type", "refresh")
                     .build();
 

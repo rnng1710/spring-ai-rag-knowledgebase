@@ -40,6 +40,12 @@ public class HybridSearchService {
     @Value("${spring.ai.vectorstore.milvus.collection-name:vector_store}")
     private String collectionName;
 
+    @Value("${rag.retrieval.dense-vector-field:embedding}")
+    private String denseVectorField;
+
+    @Value("${rag.retrieval.sparse-vector-field:sparse_vector}")
+    private String sparseVectorField;
+
     @Value("${rag.retrieval.dense-topk:50}")
     private int denseTopK;
 
@@ -103,6 +109,7 @@ public class HybridSearchService {
                 io.milvus.v2.service.vector.request.SearchReq.SearchReqBuilder<?, ?> searchReqBuilder = io.milvus.v2.service.vector.request.SearchReq
                         .builder()
                         .collectionName(collectionName)
+                        .annsField(denseVectorField)
                         .data(Collections.singletonList(new FloatVec(denseVector)))
                         .outputFields(Arrays.asList("doc_id", "content", "metadata"))
                         .topK(topK);
@@ -132,12 +139,12 @@ public class HybridSearchService {
                     SparseFloatVec sparseVec = new SparseFloatVec(sparseMap);
 
                     AnnSearchReq.AnnSearchReqBuilder<?, ?> denseReqBuilder = AnnSearchReq.builder()
-                            .vectorFieldName("embedding")
+                            .vectorFieldName(denseVectorField)
                             .vectors(Collections.singletonList(denseVec))
                             .topK(denseTopK);
 
                     AnnSearchReq.AnnSearchReqBuilder<?, ?> sparseReqBuilder = AnnSearchReq.builder()
-                            .vectorFieldName("sparse_vector")
+                            .vectorFieldName(sparseVectorField)
                             .vectors(Collections.singletonList(sparseVec))
                             .topK(denseTopK);
 

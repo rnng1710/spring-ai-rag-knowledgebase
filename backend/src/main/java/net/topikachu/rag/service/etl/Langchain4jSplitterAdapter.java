@@ -45,7 +45,6 @@ public class Langchain4jSplitterAdapter extends TextSplitter {
                     List<TextSegment> segments = internalSplitter.split(lcDoc);
 
                     // 3. 结果转换与扁平化 (修复 Java 编译流类型报错)
-                    // 完全摒弃 LangChain4j 残缺的 String 元数据，直接闭包引用 Spring 传进来的原生高维元数据
                     return segments.stream().map(segment -> {
                         Map<String, Object> springMetadata = new HashMap<>(springDoc.getMetadata());
                         return new Document(segment.text(), springMetadata);

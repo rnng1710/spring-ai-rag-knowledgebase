@@ -1,0 +1,1 @@
+dataset=ecom|collection=ecom_benchmark_vector_me|path=C:\Users\rnng\Desktop\Multi-CPR\data\ecom\corpus.tsv|size=93639579|mtime=1655119313000|batch=64|maxRows=5000

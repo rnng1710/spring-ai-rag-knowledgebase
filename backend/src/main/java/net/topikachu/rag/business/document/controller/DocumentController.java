@@ -22,13 +22,13 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/v1")
 @Slf4j
-@PreAuthorize("hasAnyRole('USER', 'ADMIN')")
 @RequiredArgsConstructor
 public class DocumentController {
 
         private final DocumentService documentService;
 
         @PostMapping("/docs/upload")
+        @PreAuthorize("hasRole('ADMIN')")
         public AjaxResult upLoad(
                         @RequestPart("file") MultipartFile file,
                         @RequestParam(value = "fileName", required = false) String fileName,
@@ -52,6 +52,7 @@ public class DocumentController {
          * - overwrite: true/false（default false）
          */
         @PostMapping(path = "/upload/batch", consumes = MediaType.MULTIPART_FORM_DATA_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
+        @PreAuthorize("hasRole('ADMIN')")
         public AjaxResult uploadBatch(
                         @RequestPart("files") List<MultipartFile> files,
                         @RequestParam(defaultValue = "false") boolean overwrite,
@@ -69,6 +70,7 @@ public class DocumentController {
         }
 
         @GetMapping("/docs")
+        @PreAuthorize("hasRole('ADMIN')")
         public AjaxResult list(
                         @RequestParam(defaultValue = "1") int page,
                         @RequestParam(defaultValue = "10") int size,
@@ -83,18 +85,21 @@ public class DocumentController {
         }
 
         @DeleteMapping("/docs/{id}")
+        @PreAuthorize("hasRole('ADMIN')")
         public AjaxResult remove(@PathVariable Long id) {
                 documentService.removeDocumentById(id);
                 return AjaxResult.success();
         }
 
         @DeleteMapping("/docs")
+        @PreAuthorize("hasRole('ADMIN')")
         public AjaxResult removeBatch(@RequestBody List<Long> ids) {
                 documentService.removeDocumentsBatch(ids);
                 return AjaxResult.success();
         }
 
         @GetMapping("/tags")
+        @PreAuthorize("hasAnyRole('USER', 'ADMIN')")
         public AjaxResult getTags() {
                 return AjaxResult.success(documentService.getAllTags());
         }
@@ -103,6 +108,7 @@ public class DocumentController {
          * Retry ingestion for a FAILED document
          */
         @PostMapping("/docs/{id}/retry")
+        @PreAuthorize("hasRole('ADMIN')")
         public AjaxResult retry(@PathVariable Long id, Principal principal) {
                 String userId = (principal != null) ? principal.getName() : null;
                 log.info("Retry ingestion requested by user={}, docId={}", userId, id);

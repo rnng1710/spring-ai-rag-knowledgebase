@@ -1,16 +1,17 @@
 package net.topikachu.rag.service.chat;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.*;
+import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
+import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Mono;
 
+import java.time.Duration;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 
 /**
@@ -24,103 +25,88 @@ public class RerankService {
     @Value("${rag.rerank.url:http://localhost:8099/rerank}")
     private String rerankUrl;
 
-    @Value("${rag.rerank.timeout-ms:500}")
+    @Value("${rag.rerank.timeout-ms:1500}")
     private int timeoutMs;
 
-    private final RestTemplate restTemplate = new RestTemplate();
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final WebClient webClient;
 
-    // TODO:: 重构为非阻塞的重排序
+    public RerankService(WebClient.Builder webClientBuilder) {
+        this.webClient = webClientBuilder.build();
+    }
+
+    // Reactive rerank with hard timeout to avoid blocking request threads
+    // indefinitely.
     @io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker(name = "rerankService", fallbackMethod = "rerankFallback")
     @io.github.resilience4j.bulkhead.annotation.Bulkhead(name = "rerankService", type = io.github.resilience4j.bulkhead.annotation.Bulkhead.Type.SEMAPHORE, fallbackMethod = "rerankFallback")
-    public List<Document> rerank(String query, List<Document> docs, int topN) {
+    public Mono<List<Document>> rerank(String query, List<Document> docs, int topN) {
         if (docs == null || docs.isEmpty()) {
-            return new ArrayList<>();
+            return Mono.just(new ArrayList<>());
         }
 
         long startTime = System.currentTimeMillis();
 
-        try {
-            // Prepare request body for TEI rerank endpoint
-            List<String> docTexts = docs.stream()
-                    .map(Document::getText)
-                    .collect(Collectors.toList());
+        List<String> texts = docs.stream()
+                .map(Document::getText)
+                .collect(Collectors.toList());
 
-            // Manually truncate texts to a safe character limit (e.g. 500 characters)
-            // to avoid silent and unpredictable dropping by the reranker max token limit
-            List<String> truncatedTexts = docTexts.stream()
-                    .map(t -> t.length() > 500 ? t.substring(0, 500) : t)
-                    .collect(Collectors.toList());
+        Map<String, Object> requestBody = new HashMap<>();
+        requestBody.put("query", query);
+        requestBody.put("texts", texts); // TEI uses "texts" not "documents"
+        requestBody.put("truncate", false);
 
-            Map<String, Object> requestBody = new HashMap<>();
-            requestBody.put("query", query);
-            requestBody.put("texts", truncatedTexts); // TEI uses "texts" not "documents"
-            requestBody.put("truncate", false);
+        return webClient.post()
+                .uri(rerankUrl)
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(requestBody)
+                .retrieve()
+                .bodyToMono(JsonNode.class)
+                .timeout(Duration.ofMillis(timeoutMs))
+                .map(results -> {
+                    List<Document> rerankedDocs = new ArrayList<>();
+                    if (results != null && results.isArray()) {
+                        List<Map.Entry<Integer, Double>> scored = new ArrayList<>();
+                        for (JsonNode result : results) {
+                            int index = result.get("index").asInt();
+                            double score = result.get("score").asDouble();
+                            scored.add(Map.entry(index, score));
+                        }
+                        scored.sort((a, b) -> Double.compare(b.getValue(), a.getValue()));
 
-            // Prepare headers
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-
-            HttpEntity<String> entity = new HttpEntity<>(objectMapper.writeValueAsString(requestBody), headers);
-
-            // Call local rerank API
-            ResponseEntity<String> response = restTemplate.exchange(
-                    rerankUrl,
-                    HttpMethod.POST,
-                    entity,
-                    String.class);
-
-            long elapsed = System.currentTimeMillis() - startTime;
-
-            // Check timeout (soft limit for logging)
-            if (elapsed > timeoutMs) {
-                log.warn("Rerank took {}ms (exceeds {}ms threshold)", elapsed, timeoutMs);
-            }
-
-            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
-                JsonNode results = objectMapper.readTree(response.getBody());
-
-                // TEI returns array of objects with "index" and "score"
-                List<Document> rerankedDocs = new ArrayList<>();
-                if (results != null && results.isArray()) {
-                    // Sort by score descending and take top N
-                    List<Map.Entry<Integer, Double>> scored = new ArrayList<>();
-                    for (JsonNode result : results) {
-                        int index = result.get("index").asInt();
-                        double score = result.get("score").asDouble();
-                        scored.add(Map.entry(index, score));
+                        for (int i = 0; i < Math.min(scored.size(), topN); i++) {
+                            int index = scored.get(i).getKey();
+                            if (index < 0 || index >= docs.size()) {
+                                continue;
+                            }
+                            double score = scored.get(i).getValue();
+                            Document originalDoc = docs.get(index);
+                            originalDoc.getMetadata().put("rerank_score", score);
+                            rerankedDocs.add(originalDoc);
+                        }
                     }
-                    scored.sort((a, b) -> Double.compare(b.getValue(), a.getValue()));
-
-                    for (int i = 0; i < Math.min(scored.size(), topN); i++) {
-                        int index = scored.get(i).getKey();
-                        double score = scored.get(i).getValue();
-
-                        Document originalDoc = docs.get(index);
-                        originalDoc.getMetadata().put("rerank_score", score);
-                        rerankedDocs.add(originalDoc);
+                    return rerankedDocs;
+                })
+                .doOnNext(rerankedDocs -> {
+                    long elapsed = System.currentTimeMillis() - startTime;
+                    log.info("Rerank completed in {}ms, returned {} docs", elapsed, rerankedDocs.size());
+                })
+                .doOnError(e -> {
+                    long elapsed = System.currentTimeMillis() - startTime;
+                    if (e instanceof TimeoutException) {
+                        log.warn("Rerank timeout after {}ms (limit={}ms), triggering circuit breaker", elapsed,
+                                timeoutMs);
+                    } else {
+                        log.error("Rerank failed after {}ms, triggering circuit breaker: {}", elapsed, e.getMessage(),
+                                e);
                     }
-                }
-
-                log.info("Rerank completed in {}ms, returned {} docs", elapsed, rerankedDocs.size());
-                return rerankedDocs;
-            } else {
-                log.error("Rerank API returned non-2xx status: {}", response.getStatusCode());
-                throw new RuntimeException("Rerank API failed with status: " + response.getStatusCode());
-            }
-
-        } catch (Exception e) {
-            log.error("Rerank failed: {}", e.getMessage());
-            throw new RuntimeException("Rerank execution failed", e);
-        }
+                });
     }
 
-    public List<Document> rerankFallback(String query, List<Document> docs, int topN, Throwable t) {
+    public Mono<List<Document>> rerankFallback(String query, List<Document> docs, int topN, Throwable t) {
         log.warn("▇▇ Rerank 降级触发 ▇▇ 原因: {} - 仅返回 Top{} 原始检索结果", t.getMessage(), topN);
 
         if (docs == null || docs.isEmpty()) {
-            return Collections.emptyList();
+            return Mono.just(Collections.emptyList());
         }
-        return docs.subList(0, Math.min(docs.size(), topN));
+        return Mono.just(docs.subList(0, Math.min(docs.size(), topN)));
     }
 }

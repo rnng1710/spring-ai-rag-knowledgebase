@@ -5,6 +5,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.convert.converter.Converter;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AbstractAuthenticationToken;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
@@ -54,8 +55,8 @@ public class SecurityConfiguration {
 
 				// 4. 关键修改3：极简的 URL 权限配置
 				.authorizeHttpRequests(auth -> auth
-						// (A) 显式放行认证相关接口（登录、刷新 token 等）
-						.requestMatchers("/api/v1/auth/**").permitAll()
+						// (A) 仅放行登录与刷新 token
+						.requestMatchers(HttpMethod.POST, "/api/v1/auth/login", "/api/v1/auth/refresh").permitAll()
 
 						// (B) 剩下的所有 /api/v1/** 请求，只要带了合法的 Token 就能访问
 						// 具体的 USER/ADMIN 权限区别，将移到 Controller 方法上使用 @PreAuthorize 配置

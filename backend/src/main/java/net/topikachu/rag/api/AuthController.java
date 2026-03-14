@@ -4,11 +4,13 @@ import net.topikachu.rag.common.AjaxResult;
 import net.topikachu.rag.service.SysUserService;
 import net.topikachu.rag.service.TokenService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 
+import java.security.Principal;
 import java.time.Instant;
 import java.util.Map;
 
@@ -41,6 +43,7 @@ public class AuthController {
     }
 
     @PostMapping("/register")
+    @PreAuthorize("hasRole('ADMIN')")
     public AjaxResult register(@RequestBody Map<String, String> body) {
         String username = body.get("username");
         String password = body.get("password");
@@ -58,13 +61,23 @@ public class AuthController {
     }
 
     @PostMapping("/change-password")
-    public AjaxResult changePassword(@RequestBody Map<String, String> body) {
-        String username = body.get("username");
+    @PreAuthorize("hasAnyRole('USER', 'ADMIN')")
+    public AjaxResult changePassword(@RequestBody Map<String, String> body, Principal principal) {
+        if (principal == null || !StringUtils.hasText(principal.getName())) {
+            return AjaxResult.error(401, "Unauthorized");
+        }
+
+        String username = principal.getName();
+        String bodyUsername = body.get("username");
         String oldPassword = body.get("old_password");
         String newPassword = body.get("new_password");
 
-        if (!StringUtils.hasText(username) || !StringUtils.hasText(oldPassword) || !StringUtils.hasText(newPassword)) {
-            return AjaxResult.error(400, "Username, old_password and new_password are required");
+        if (StringUtils.hasText(bodyUsername) && !username.equals(bodyUsername)) {
+            return AjaxResult.error(403, "Username mismatch with current user");
+        }
+
+        if (!StringUtils.hasText(oldPassword) || !StringUtils.hasText(newPassword)) {
+            return AjaxResult.error(400, "old_password and new_password are required");
         }
 
         try {

@@ -2,29 +2,29 @@
   <div class="page">
     <div class="header" style="margin-bottom: 16px;">
       <div>
-        <h2>Admin Console</h2>
-        <div class="muted">Signed in as {{ username }}</div>
+        <h2>{{ t("adminStatus.title") }}</h2>
+        <div class="muted">{{ t("chat.signedInAs", { username }) }}</div>
       </div>
       <div>
-        <el-button @click="goIndex" style="margin-right: 8px;">Index</el-button>
-        <el-button @click="logout">Switch Account</el-button>
+        <el-button @click="goIndex" style="margin-right: 8px;">{{ t("adminStatus.index") }}</el-button>
+        <el-button @click="logout">{{ t("adminStatus.switchAccount") }}</el-button>
       </div>
     </div>
     <div class="grid grid-2">
       <div class="card">
-        <h2>Upload Document</h2>
-        <div class="muted">POST /api/v1/docs/upload (admin only)</div>
+        <h2>{{ t("adminStatus.uploadDocument") }}</h2>
+        <div class="muted">{{ t("adminStatus.uploadApiHint") }}</div>
         <el-form label-width="120px" style="margin-top: 12px;">
-          <el-form-item label="File">
+          <el-form-item :label="t('common.file')">
             <input type="file" @change="onFileChange" />
           </el-form-item>
-          <el-form-item label="File Name">
-            <el-input v-model="fileName" placeholder="optional" />
+          <el-form-item :label="t('adminStatus.fileName')">
+            <el-input v-model="fileName" :placeholder="t('common.optional')" />
           </el-form-item>
-          <el-form-item label="Overwrite">
+          <el-form-item :label="t('common.overwrite')">
             <el-switch v-model="overwrite" />
           </el-form-item>
-          <el-button type="primary" :loading="uploading" @click="upload">Upload</el-button>
+          <el-button type="primary" :loading="uploading" @click="upload">{{ t("common.upload") }}</el-button>
         </el-form>
         <div style="margin-top: 12px;" class="muted">
           {{ uploadStatus }}
@@ -34,17 +34,17 @@
       <div class="card">
         <div class="header" style="margin-bottom: 12px;">
           <div>
-            <h2>Document Status</h2>
-            <div class="muted">Placeholder table. Backend API not implemented yet.</div>
+            <h2>{{ t("adminStatus.documentStatus") }}</h2>
+            <div class="muted">{{ t("adminStatus.placeholderHint") }}</div>
           </div>
-          <el-button disabled>Refresh</el-button>
+          <el-button disabled>{{ t("adminStatus.refresh") }}</el-button>
         </div>
         <el-table :data="rows" border style="width: 100%">
-          <el-table-column prop="docUuid" label="doc_uuid" width="180" />
-          <el-table-column prop="filename" label="filename" />
-          <el-table-column prop="status" label="status" width="120" />
-          <el-table-column prop="updatedAt" label="updated_at" width="180" />
-          <el-table-column prop="error" label="error" />
+          <el-table-column prop="docUuid" :label="t('adminStatus.docUuid')" width="180" />
+          <el-table-column prop="filename" :label="t('docs.filename')" />
+          <el-table-column prop="status" :label="t('common.status')" width="120" />
+          <el-table-column prop="updatedAt" :label="t('adminStatus.updatedAt')" width="180" />
+          <el-table-column prop="error" :label="t('docs.errorLabel')" />
         </el-table>
       </div>
     </div>
@@ -55,15 +55,18 @@
 import { ref } from "vue";
 import { ElMessage } from "element-plus";
 import { useRouter } from "vue-router";
-import { apiUrl, getAuthHeader, clearTokens } from "../api/client";
+import { apiUrl, getAuthHeader } from "../api/client";
+import { clearAuthSession, getAccessToken, getUsernameFromAccessToken } from "../utils/auth";
+import { useI18n } from "vue-i18n";
 
 const router = useRouter();
-const username = ref(localStorage.getItem("auth_user") || "admin");
+const { t } = useI18n();
+const username = ref(getUsernameFromAccessToken(getAccessToken()) || localStorage.getItem("auth_user") || "admin");
 const fileName = ref("");
 const overwrite = ref(false);
 const file = ref<File | null>(null);
 const uploading = ref(false);
-const uploadStatus = ref("No upload yet.");
+const uploadStatus = ref(t("adminStatus.noUploadYet"));
 
 const onFileChange = (event: Event) => {
   const target = event.target as HTMLInputElement;
@@ -72,11 +75,11 @@ const onFileChange = (event: Event) => {
 
 const upload = async () => {
   if (!file.value) {
-    ElMessage.warning("Please select a file first.");
+    ElMessage.warning(t("adminStatus.selectFileFirst"));
     return;
   }
   uploading.value = true;
-  uploadStatus.value = "Uploading...";
+  uploadStatus.value = t("adminStatus.uploading");
 
   const form = new FormData();
   form.append("file", file.value);
@@ -109,11 +112,11 @@ const upload = async () => {
     const msg = msgFromPayload || (typeof fallbackMsg === "string" ? fallbackMsg.trim() : "");
 
     if (!response.ok) {
-      throw new Error(`Upload failed: HTTP ${response.status}${msg ? " " + msg : ""}`);
+      throw new Error(t("adminStatus.uploadFailedHttp", { status: response.status, msg: msg ? ` ${msg}` : "" }));
     }
 
     if (payload?.success !== true || payload?.code !== 0) {
-      const defaultMsg = "Upload failed: Unknown error";
+      const defaultMsg = t("adminStatus.uploadFailedUnknown");
       throw new Error(msgFromPayload || defaultMsg);
     }
 
@@ -125,14 +128,14 @@ const upload = async () => {
     const hash = data?.hash ?? "";
 
     if (created) {
-      ElMessage.success("Upload successful: New document created");
-      uploadStatus.value = `Created: docUuid=${docUuid}, fileName=${name}, status=${status}, hash=${hash}`;
+      ElMessage.success(t("adminStatus.uploadSuccessful"));
+      uploadStatus.value = t("adminStatus.uploadCreatedStatus", { docUuid, name, status, hash });
     } else {
-      ElMessage.info("File already exists: Please do not upload duplicates");
-      uploadStatus.value = `Existed: docUuid=${docUuid}, fileName=${name}, status=${status}, hash=${hash}`;
+      ElMessage.info(t("adminStatus.uploadDuplicated"));
+      uploadStatus.value = t("adminStatus.uploadExistedStatus", { docUuid, name, status, hash });
     }
   } catch (err: any) {
-    uploadStatus.value = `Upload failed`;
+    uploadStatus.value = t("adminStatus.uploadFailed");
     ElMessage.error(uploadStatus.value);
   } finally {
     uploading.value = false;
@@ -154,9 +157,7 @@ const goIndex = () => {
 };
 
 const logout = () => {
-  clearTokens();
-  localStorage.removeItem("auth_user");
-  localStorage.removeItem("auth_role");
+  clearAuthSession();
   router.push("/login");
 };
 </script>

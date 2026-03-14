@@ -18,6 +18,7 @@ import org.springframework.data.redis.serializer.GenericJackson2JsonRedisSeriali
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 
 import static com.fasterxml.jackson.databind.ObjectMapper.DefaultTyping;
 
@@ -80,7 +81,10 @@ public class RedisChatMemoryRepositoryConfiguration {
 			public ToolResponseMessage deserialize(JsonParser p, DeserializationContext ctxt) throws IOException, JacksonException {
 				p.nextToken();
 				p.nextToken();
-				return new ToolResponseMessage(List.of());
+				return ToolResponseMessage.builder()
+						.responses(List.<ToolResponseMessage.ToolResponse>of())
+						.metadata(Map.of())
+						.build();
 			}
 		});
 		objectMapper.registerModule(simpleModule);

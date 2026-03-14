@@ -5,19 +5,24 @@ import AdminIndexView from "../views/AdminIndexView.vue";
 import AdminStatusView from "../views/AdminStatusView.vue";
 import AdminLayout from "../layout/AdminLayout.vue";
 import AdminDocumentsView from "../views/AdminDocumentsView.vue";
+import { AppRole, clearAuthSession, getAccessToken, getRoleFromAccessToken, getUsernameFromAccessToken, isTokenExpired } from "../utils/auth";
 
 import UserManagement from "../views/admin/UserManagement.vue";
+
+interface AppRouteMeta {
+  role?: AppRole;
+}
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: "/", redirect: "/login" },
     { path: "/login", component: LoginView },
-    { path: "/user/chat", component: UserChatView, meta: { role: "user" } },
+    { path: "/user/chat", component: UserChatView, meta: { role: "USER" as AppRole } },
     {
       path: "/admin",
       component: AdminLayout,
-      meta: { role: "admin" },
+      meta: { role: "ADMIN" as AppRole },
       redirect: "/admin/index",
       children: [
         { path: "index", component: AdminIndexView },
@@ -30,24 +35,31 @@ const router = createRouter({
 });
 
 router.beforeEach((to) => {
-  if (to.path === "/login") {
-    return true;
-  }
-  const token = localStorage.getItem("auth_access_token");
-  const role = localStorage.getItem("auth_role");
-  if (!token || !role) {
-    return "/login";
-  }
-  const requiredRole = to.matched.some(record => record.meta.role)
-    ? to.matched.find(record => record.meta.role)?.meta.role
-    : to.meta.role;
+  const token = getAccessToken();
+  const role = getRoleFromAccessToken(token);
+  const username = getUsernameFromAccessToken(token);
 
-  // Simple check: if any matched route requires admin, current user must be admin
-  // Currently structure is simple.
-  const routeRole = to.matched.find(r => r.meta.role)?.meta.role;
-  if (routeRole && routeRole !== role) {
-    // User trying to access admin
+  const hasValidToken = !!token && !!role && !!username && !isTokenExpired(token);
+  if (!hasValidToken) {
+    clearAuthSession();
+    if (to.path === "/login") {
+      return true;
+    }
     return "/login";
+  }
+
+  localStorage.setItem("auth_user", username);
+
+  if (to.path === "/login") {
+    return role === "ADMIN" ? "/admin/index" : "/user/chat";
+  }
+
+  const requiredRole = to.matched
+    .map((record) => (record.meta as AppRouteMeta).role)
+    .find((metaRole): metaRole is AppRole => !!metaRole);
+
+  if (requiredRole && role !== requiredRole) {
+    return role === "ADMIN" ? "/admin/index" : "/user/chat";
   }
 
   return true;

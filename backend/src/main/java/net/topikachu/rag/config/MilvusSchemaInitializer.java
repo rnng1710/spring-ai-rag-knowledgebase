@@ -117,14 +117,12 @@ public class MilvusSchemaInitializer implements CommandLineRunner {
                                 .dataType(DataType.JSON)
                                 .build());
 
-                // Dense vector field: matches Spring AI "embedding"
                 schema.addField(AddFieldReq.builder()
                                 .fieldName("embedding")
                                 .dataType(DataType.FloatVector)
                                 .dimension(embeddingDimension)
                                 .build());
 
-                // Sparse vector field (NEW for hybrid search)
                 schema.addField(AddFieldReq.builder()
                                 .fieldName("sparse_vector")
                                 .dataType(DataType.SparseFloatVector)
@@ -139,9 +137,12 @@ public class MilvusSchemaInitializer implements CommandLineRunner {
                 // Create indexes
                 IndexParam denseIndex = IndexParam.builder()
                                 .fieldName("embedding")
-                                .indexType(IndexParam.IndexType.IVF_FLAT)
+                                .indexType(IndexParam.IndexType.HNSW)
                                 .metricType(IndexParam.MetricType.COSINE)
-                                .extraParams(java.util.Map.of("nlist", 128))
+                                .extraParams(java.util.Map.of(
+                                        "M", 16,
+                                        "efConstruction", 64
+                                ))
                                 .build();
 
                 IndexParam sparseIndex = IndexParam.builder()
