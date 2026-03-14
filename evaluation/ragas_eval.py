@@ -39,7 +39,7 @@ from ragas.embeddings import BaseRagasEmbeddings
 # ======================== Configuration ========================
 
 # ⚠️ 请确保这里填入了你的实际 Key，或者在终端设置了环境变量！
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "sk-09aea41759c5464dacf7aa408e73946a")
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 EMBEDDING_URL = os.environ.get("EMBEDDING_URL", "http://localhost:8098")
 
 JSONL_INPUT_PREFIX = Path(__file__).parent / "ragas_eval_data_"
