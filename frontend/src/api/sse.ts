@@ -1,18 +1,46 @@
+import { ensureValidAccessToken, refreshTokens } from "./client";
+
 export const streamSsePost = async (
   url: string,
   body: Record<string, unknown> | null,
   onChunk: (event: string, data: string) => void,
-  authHeader: string
+  signal?: AbortSignal
 ) => {
-  const response = await fetch(url, {
+  const requestInit = {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "Accept": "text/event-stream",
-      "Authorization": authHeader
     },
-    body: body ? JSON.stringify(body) : "{}"
-  });
+    body: body ? JSON.stringify(body) : "{}",
+    signal
+  } satisfies RequestInit;
+
+  const openStream = async (allowRetry = true) => {
+    const token = await ensureValidAccessToken();
+    const response = await fetch(url, {
+      ...requestInit,
+      headers: {
+        ...requestInit.headers,
+        "Authorization": `Bearer ${token}`
+      }
+    });
+
+    if (response.status === 401 && allowRetry) {
+      const refreshed = await refreshTokens();
+      return fetch(url, {
+        ...requestInit,
+        headers: {
+          ...requestInit.headers,
+          "Authorization": `Bearer ${refreshed.access_token}`
+        }
+      });
+    }
+
+    return response;
+  };
+
+  const response = await openStream();
 
   if (!response.ok || !response.body) {
     throw new Error(`Request failed: ${response.status}`);

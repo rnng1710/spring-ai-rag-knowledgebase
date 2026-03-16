@@ -20,6 +20,7 @@ import reactor.core.scheduler.Schedulers;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 
@@ -90,26 +91,7 @@ public class ChatService {
                 })
                 .map(docs -> {
                     // 3. Build Context with length limit to prevent LLM context overflow
-                    StringBuilder contextBuilder = new StringBuilder();
-                    for (int i = 0; i < docs.size(); i++) {
-                        Document doc = docs.get(i);
-                        String filename = (String) doc.getMetadata().getOrDefault("file_name", "Unknown Source");
-
-                        String structuredEntry = String.format(
-                                """
-                                                【第%s页】(来源: %s)
-                                                内容: %s
-                                                ------------------------
-                                                """,
-                                i + 1, filename, doc.getText());
-
-                        if (contextBuilder.length() + structuredEntry.length() > maxContextChars) {
-                            log.warn("Context limit reached, dropping remaining documents from rank {}", i);
-                            break;
-                        }
-                        contextBuilder.append(structuredEntry);
-                    }
-                    String context = contextBuilder.toString();
+                    String context = buildContext(docs);
 
                     // 4. Resolve the strategy and stream response
                     ChatModelStrategy strategy = strategyFactory.getStrategy(modelId);
@@ -232,5 +214,42 @@ public class ChatService {
             log.error("Failed to load prompt template, falling back to default.", e);
             return "Context:\n{context}";
         }
+    }
+
+    private String buildContext(List<Document> docs) {
+        StringBuilder contextBuilder = new StringBuilder();
+        for (int i = 0; i < docs.size(); i++) {
+            Document doc = docs.get(i);
+            Map<String, Object> metadata = doc.getMetadata();
+            String filename = (String) metadata.getOrDefault("file_name", "Unknown Source");
+            Object page = metadata.getOrDefault("page_number", metadata.get("page"));
+            String pageLabel = (page == null) ? ("片段" + (i + 1)) : ("第" + formatPageValue(page) + "页");
+
+            String structuredEntry = String.format(
+                    """
+                                    【%s】(来源: %s)
+                                    内容: %s
+                                    ------------------------
+                                    """,
+                    pageLabel, filename, doc.getText());
+
+            if (contextBuilder.length() + structuredEntry.length() > maxContextChars) {
+                log.warn("Context limit reached, dropping remaining documents from rank {}", i);
+                break;
+            }
+            contextBuilder.append(structuredEntry);
+        }
+        return contextBuilder.toString();
+    }
+
+    private String formatPageValue(Object page) {
+        if (page instanceof Number number) {
+            double value = number.doubleValue();
+            if (Math.rint(value) == value) {
+                return Long.toString((long) value);
+            }
+            return Double.toString(value);
+        }
+        return page.toString();
     }
 }

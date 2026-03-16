@@ -24,6 +24,7 @@ hs_err_pid*
 replay_pid*
 
 # ===== frontend =====
+node_modules/
 frontend/node_modules/
 frontend/dist/
 frontend/.env
@@ -40,3 +41,6 @@ backend/src/main/resources/application.properties
 .idea/
 *.iml
 .vscode/
+
+# Generated outputs
+output/

@@ -24,7 +24,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { useRouter } from "vue-router";
-import { apiUrl, getAuthHeader } from "../api/client";
+import { apiUrl } from "../api/client";
 import { streamSsePost } from "../api/sse";
 import { useI18n } from "vue-i18n";
 
@@ -46,7 +46,6 @@ const startIndexing = async () => {
       (data) => {
         output.value += `${data}\n`;
       },
-      getAuthHeader()
     );
     status.value = t("adminIndex.completed");
   } catch (err: any) {

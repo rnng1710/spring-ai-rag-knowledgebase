@@ -10,6 +10,8 @@ import io.milvus.v2.service.vector.request.data.FloatVec;
 import io.milvus.v2.service.vector.request.data.SparseFloatVec;
 import io.milvus.v2.service.vector.request.ranker.RRFRanker;
 import io.milvus.v2.service.vector.response.SearchResp;
+import io.milvus.v2.service.vector.request.QueryReq;
+import io.milvus.v2.service.vector.response.QueryResp;
 import lombok.extern.slf4j.Slf4j;
 
 import net.topikachu.rag.service.etl.TeiEmbeddingClient;
@@ -200,6 +202,56 @@ public class HybridSearchService {
                     metadata = castMeta;
                 }
                 metadata.put("score", result.getScore());
+
+                Document doc = Document.builder()
+                        .id(id)
+                        .text(content)
+                        .metadata(metadata)
+                        .build();
+                results.add(doc);
+            }
+        }
+        return results;
+    }
+
+    public Document getByDocId(String docId) {
+        try {
+            QueryReq queryReq = QueryReq.builder()
+                    .collectionName(collectionName)
+                    .filter(String.format("doc_id == \"%s\"", docId))
+                    .outputFields(Arrays.asList("doc_id", "content", "metadata"))
+                    .build();
+            QueryResp response = milvusClient.query(queryReq);
+            List<Document> docs = convertQueryToDocuments(response);
+            if (docs.isEmpty()) {
+                return null;
+            }
+            return docs.get(0);
+        } catch (Exception e) {
+            log.warn("Query by doc_id failed: {}", docId, e);
+            return null;
+        }
+    }
+
+    private List<Document> convertQueryToDocuments(QueryResp response) {
+        List<Document> results = new ArrayList<>();
+        List<QueryResp.QueryResult> queryResults = response.getQueryResults();
+        if (queryResults != null && !queryResults.isEmpty()) {
+            for (QueryResp.QueryResult result : queryResults) {
+                Map<String, Object> entity = result.getEntity();
+                String id = (String) entity.get("doc_id");
+                String content = (String) entity.get("content");
+
+                Map<String, Object> metadata = new HashMap<>();
+                Object metaObj = entity.get("metadata");
+                if (metaObj instanceof JsonObject) {
+                    JsonObject jsonMeta = (JsonObject) metaObj;
+                    metadata = gson.fromJson(jsonMeta, Map.class);
+                } else if (metaObj instanceof Map) {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> castMeta = (Map<String, Object>) metaObj;
+                    metadata = castMeta;
+                }
 
                 Document doc = Document.builder()
                         .id(id)

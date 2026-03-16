@@ -1,11 +1,21 @@
 package net.topikachu.rag.service.chat.strategy;
 
 import net.topikachu.rag.config.LlmProperties;
+import io.netty.channel.ChannelOption;
+import io.netty.handler.timeout.ReadTimeoutHandler;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.http.client.reactive.ReactorClientHttpConnector;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.stereotype.Component;
+import reactor.netty.http.client.HttpClient;
+
+import java.time.Duration;
+import java.util.concurrent.TimeUnit;
 
 @Component
 public class DeepSeekChatModelStrategy implements ChatModelStrategy {
@@ -13,9 +23,27 @@ public class DeepSeekChatModelStrategy implements ChatModelStrategy {
     private final ChatClient chatClient;
 
     public DeepSeekChatModelStrategy(LlmProperties properties) {
+        int readTimeoutMs = properties.getReadTimeoutMs();
+        HttpClient httpClient = HttpClient.create()
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, readTimeoutMs)
+                .responseTimeout(Duration.ofMillis(readTimeoutMs))
+                .doOnConnected(connection -> connection
+                        .addHandlerLast(new ReadTimeoutHandler(readTimeoutMs, TimeUnit.MILLISECONDS)));
+
+        WebClient.Builder webClientBuilder = WebClient.builder()
+                .clientConnector(new ReactorClientHttpConnector(httpClient));
+
+        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+        requestFactory.setConnectTimeout(readTimeoutMs);
+        requestFactory.setReadTimeout(readTimeoutMs);
+        RestClient.Builder restClientBuilder = RestClient.builder()
+                .requestFactory(requestFactory);
+
         OpenAiApi openAiApi = OpenAiApi.builder()
                 .baseUrl(properties.getBaseUrl())
                 .apiKey(properties.getApiKey())
+                .restClientBuilder(restClientBuilder)
+                .webClientBuilder(webClientBuilder)
                 .build();
 
         OpenAiChatOptions options = OpenAiChatOptions.builder()
@@ -61,6 +89,8 @@ public class DeepSeekChatModelStrategy implements ChatModelStrategy {
                 请直接回答：“根据已知文档，无法回答该问题”或“当前相关守则中未包含此具体规定”，严禁为迎合用户而编造细节。
                 5. 【输出规范】回答保持专业、直接、简洁。优先直接给出明确结论，随后可简明扼要地引述文档中的规则依据。严禁输出内部思考或推理过程。
                 6.  回答时请直接命中问题核心，不要附带上下文中与问题核心无关的冗余条款或处罚细节。
+                7. 【引用格式】如果引用了文档依据，必须使用真实页码格式，例如【第18页】、【第19页】。
+                8. 如果上下文条目没有页码，只能写“根据已知文档”或直接陈述依据，严禁输出【第页】、【第X页】这类空页码或占位页码。
                 ================ 知识库上下文 ================
                 {context}
                 ============================================

@@ -6,6 +6,7 @@ import AdminStatusView from "../views/AdminStatusView.vue";
 import AdminLayout from "../layout/AdminLayout.vue";
 import AdminDocumentsView from "../views/AdminDocumentsView.vue";
 import { AppRole, clearAuthSession, getAccessToken, getRoleFromAccessToken, getUsernameFromAccessToken, isTokenExpired } from "../utils/auth";
+import { ensureValidAccessToken } from "../api/client";
 
 import UserManagement from "../views/admin/UserManagement.vue";
 
@@ -34,11 +35,18 @@ const router = createRouter({
   ]
 });
 
-router.beforeEach((to) => {
-  const token = getAccessToken();
+router.beforeEach(async (to) => {
+  let token = getAccessToken();
+  if (token && isTokenExpired(token)) {
+    try {
+      token = await ensureValidAccessToken();
+    } catch {
+      token = null;
+    }
+  }
+
   const role = getRoleFromAccessToken(token);
   const username = getUsernameFromAccessToken(token);
-
   const hasValidToken = !!token && !!role && !!username && !isTokenExpired(token);
   if (!hasValidToken) {
     clearAuthSession();
@@ -49,6 +57,7 @@ router.beforeEach((to) => {
   }
 
   localStorage.setItem("auth_user", username);
+  localStorage.setItem("auth_role", role);
 
   if (to.path === "/login") {
     return role === "ADMIN" ? "/admin/index" : "/user/chat";

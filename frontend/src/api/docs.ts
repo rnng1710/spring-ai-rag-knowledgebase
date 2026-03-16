@@ -1,4 +1,4 @@
-import { apiUrl, getAuthHeader } from "./client";
+import { apiUrl, authFetch } from "./client";
 
 export interface Doc {
     id: string; // Backend uses Long but JS handles generic IDs well.
@@ -26,9 +26,7 @@ export const listDocs = async (page: number, size: number, keyword?: string) => 
         params.append("keyword", keyword);
     }
 
-    const res = await fetch(apiUrl(`/api/v1/docs?${params.toString()}`), {
-        headers: { "Authorization": getAuthHeader() }
-    });
+    const res = await authFetch(apiUrl(`/api/v1/docs?${params.toString()}`));
     const json = await res.json();
     if (json.code === 0) {
         return json.data as PageResult<Doc>;
@@ -37,19 +35,17 @@ export const listDocs = async (page: number, size: number, keyword?: string) => 
 };
 
 export const deleteDoc = async (id: string | number) => {
-    const res = await fetch(apiUrl(`/api/v1/docs/${id}`), {
-        method: "DELETE",
-        headers: { "Authorization": getAuthHeader() }
+    const res = await authFetch(apiUrl(`/api/v1/docs/${id}`), {
+        method: "DELETE"
     });
     const json = await res.json();
     if (json.code !== 0) throw new Error(json.msg || "Delete failed");
 };
 
 export const deleteDocsBatch = async (ids: (string | number)[]) => {
-    const res = await fetch(apiUrl(`/api/v1/docs`), {
+    const res = await authFetch(apiUrl(`/api/v1/docs`), {
         method: "DELETE",
         headers: {
-            "Authorization": getAuthHeader(),
             "Content-Type": "application/json"
         },
         body: JSON.stringify(ids)
@@ -67,9 +63,8 @@ export const uploadSingle = async (file: File, fileName?: string, overwrite = fa
         tags.forEach(tag => formData.append("tags", tag));
     }
 
-    const res = await fetch(apiUrl("/api/v1/docs/upload"), {
+    const res = await authFetch(apiUrl("/api/v1/docs/upload"), {
         method: "POST",
-        headers: { "Authorization": getAuthHeader() },
         body: formData
     });
     return await res.json();
@@ -83,18 +78,15 @@ export const uploadBatch = async (files: File[], overwrite = false, tags: string
         tags.forEach(tag => formData.append("tags", tag));
     }
 
-    const res = await fetch(apiUrl("/api/v1/upload/batch"), {
+    const res = await authFetch(apiUrl("/api/v1/upload/batch"), {
         method: "POST",
-        headers: { "Authorization": getAuthHeader() },
         body: formData
     });
     return await res.json();
 };
 
 export const getAllTags = async () => {
-    const res = await fetch(apiUrl("/api/v1/tags"), {
-        headers: { "Authorization": getAuthHeader() }
-    });
+    const res = await authFetch(apiUrl("/api/v1/tags"));
     const json = await res.json();
     if (json.code === 0) {
         return json.data as string[];

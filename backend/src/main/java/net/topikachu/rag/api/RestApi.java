@@ -1,6 +1,7 @@
 package net.topikachu.rag.api;
 
 import lombok.extern.slf4j.Slf4j;
+import net.topikachu.rag.agent.AgentChatService;
 import net.topikachu.rag.service.chat.ChatService;
 import net.topikachu.rag.service.etl.EtlPipeline;
 import lombok.RequiredArgsConstructor;
@@ -16,6 +17,8 @@ import java.util.stream.Collectors;
 
 import java.io.Serializable;
 import java.security.Principal;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.util.StringUtils;
 
 import static org.springframework.ai.reader.tika.TikaDocumentReader.METADATA_SOURCE;
 
@@ -26,8 +29,15 @@ import static org.springframework.ai.reader.tika.TikaDocumentReader.METADATA_SOU
 public class RestApi {
 
 	private final ChatService chatService;
+	private final AgentChatService agentChatService;
 
 	private final EtlPipeline etlPipeline;
+
+	@Value("${rag.agent.enable:true}")
+	private boolean agentEnabled;
+
+	@Value("${rag.agent.default-mode:rag}")
+	private String agentDefaultMode;
 
 	@PostMapping(path = "/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
 	@PreAuthorize("hasAnyRole('USER', 'ADMIN')")
@@ -36,11 +46,43 @@ public class RestApi {
 			Principal principal) {
 		var conversationKey = String.format("%s:%s", principal.getName(), conversationId);
 
+		String mode = chatRequest.mode();
+		if (!StringUtils.hasText(mode)) {
+			mode = agentDefaultMode;
+		}
+
+		boolean useAgent = agentEnabled && "agent".equalsIgnoreCase(mode);
+		String msgId = StringUtils.hasText(chatRequest.msgId()) ? chatRequest.msgId() : ("msg-" + System.currentTimeMillis());
+
+		if (!agentEnabled && "agent".equalsIgnoreCase(mode)) {
+			log.warn("Agent mode requested while disabled. conversationId={}, user={}", conversationId, principal.getName());
+			return Flux.just(
+					ServerSentEvent.builder()
+							.event("error")
+							.data((Object) Map.of(
+									"msgId", msgId,
+									"message", "当前系统未启用 Agent 模式，请切换到快速模式后重试。"))
+							.build(),
+					ServerSentEvent.builder()
+							.event("done")
+							.data((Object) Map.of("msgId", msgId))
+							.build());
+		}
+
+		if (useAgent) {
+			return agentChatService.streamEvents(
+					chatRequest.userInput(),
+					conversationKey,
+					chatRequest.tags(),
+					chatRequest.modelId(),
+					msgId);
+		}
+
 		return chatService.streamWithSources(
-				chatRequest.userInput(),
-				conversationKey,
-				chatRequest.tags(),
-				chatRequest.modelId())
+						chatRequest.userInput(),
+						conversationKey,
+						chatRequest.tags(),
+						chatRequest.modelId())
 				.flatMapMany(response -> {
 					List<Map<String, Object>> sourceMetadata = response.sources().stream()
 							.map(doc -> doc.getMetadata())
@@ -76,6 +118,6 @@ public class RestApi {
 				.map(document -> (String) document.getMetadata().get(METADATA_SOURCE));
 	}
 
-	record ChatRequest(String userInput, List<String> tags, String modelId) implements Serializable {
+	record ChatRequest(String userInput, List<String> tags, String modelId, String mode, String msgId) implements Serializable {
 	}
 }

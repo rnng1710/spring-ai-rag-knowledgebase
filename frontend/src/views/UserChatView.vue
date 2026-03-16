@@ -53,7 +53,15 @@
                 ></textarea>
                 <div class="chat-input-actions">
                    <div class="input-tip">{{ t("chat.inputTip") }}</div>
-                     <div style="display:flex; gap:10px; align-items:center">
+                     <div class="input-controls">
+                         <el-select v-model="selectedMode" size="small" class="mode-select">
+                             <el-option
+                               v-for="mode in modeOptions"
+                               :key="mode.value"
+                               :label="mode.label"
+                               :value="mode.value"
+                             />
+                         </el-select>
                          <el-select v-model="selectedModel" size="small" style="width: 120px;">
                              <el-option label="Qwen 2.5" value="ollama" />
                              <el-option label="DeepSeek" value="deepseek" />
@@ -103,6 +111,20 @@
 
                     <div v-if="msg.content" class="message-content" style="white-space: pre-wrap;" v-html="renderMarkdown(msg.content)"></div>
                       <div v-else class="message-content" style="color:#909399; font-style:italic">{{ t("chat.thinking") }}</div>
+
+                    <div v-if="msg.mode === 'agent' && msg.agentTrace" class="agent-trace-block">
+                      <div class="agent-stage-line">
+                        <span class="agent-stage-pill">{{ stageLabel(msg.agentTrace.currentStage) }}</span>
+                        <span v-if="msg.agentTrace.isRevised" class="agent-revised-badge">{{ t("chat.revisedBadge") }}</span>
+                      </div>
+                      <details class="agent-trace-panel">
+                        <summary>{{ t("chat.agentTrace") }}</summary>
+                        <div class="agent-trace-log" v-for="(log, logIndex) in msg.agentTrace.logs" :key="`${msg.id}-${logIndex}`">
+                          <span class="agent-log-stage">{{ stageLabel(log.stage) }}</span>
+                          <span class="agent-log-text">{{ log.text }}</span>
+                        </div>
+                      </details>
+                    </div>
                     
                     <!-- Sources -->
                     <div v-if="msg.sources && msg.sources.length > 0" class="message-sources">
@@ -126,10 +148,18 @@
                 ></textarea>
                 <div class="chat-input-actions">
                   <div class="input-tip">{{ t("chat.inputTip") }}</div>
-                    <div style="display:flex; gap:10px; align-items:center">
+                    <div class="input-controls">
                      <el-tooltip :content="t('chat.clearChat')" placement="top">
                             <el-button circle size="small" @click="reset" :icon="Close" style="border:none; background:transparent;" />
                          </el-tooltip>
+                         <el-select v-model="selectedMode" size="small" class="mode-select">
+                             <el-option
+                               v-for="mode in modeOptions"
+                               :key="mode.value"
+                               :label="mode.label"
+                               :value="mode.value"
+                             />
+                         </el-select>
                          <el-select v-model="selectedModel" size="small" style="width: 120px;">
                              <el-option label="Qwen 2.5" value="ollama" />
                              <el-option label="DeepSeek" value="deepseek" />
@@ -149,9 +179,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick, reactive, onMounted } from "vue";
+import { ref, nextTick, onMounted } from "vue";
 import { useRouter } from "vue-router";
-import { apiUrl, getAuthHeader } from "../api/client";
+import { apiUrl } from "../api/client";
 import { streamSsePost } from "../api/sse";
 import { getAllTags } from "../api/docs";
 import { Plus, SwitchButton, Position, Close, Collection } from "@element-plus/icons-vue";
@@ -170,17 +200,75 @@ const conversationId = ref(`conv-${Math.random().toString(36).slice(2, 8)}`);
 const question = ref("");
 const selectedTag = ref("");
 const selectedModel = ref("ollama");
+const selectedMode = ref<"rag" | "agent">("rag");
+const modeOptions = [
+  { value: "rag", label: t("chat.modeFast") },
+  { value: "agent", label: t("chat.modeAgent") },
+];
 
-interface Message {
-    role: 'user' | 'assistant';
-    content: string;
-    modelName?: string;
-    sources?: any[];
+type ChatMode = "rag" | "agent";
+type AgentStage =
+  | "idle"
+  | "planning"
+  | "query_rewriting"
+  | "retrieving"
+  | "drafting"
+  | "reviewing"
+  | "revising"
+  | "generating_final"
+  | "followup"
+  | "done"
+  | "error";
+
+interface SourceMeta {
+  [key: string]: unknown;
+  file_name?: string;
+  source?: string;
+  doc_uuid?: string;
+  page_number?: number;
 }
 
-const messages = ref<Message[]>([]);
+interface AgentTraceLog {
+  stage: AgentStage;
+  kind: "info" | "decision" | "critique" | "retrieval";
+  text: string;
+  timestamp: number;
+}
+
+interface AgentTrace {
+  currentStage: AgentStage;
+  logs: AgentTraceLog[];
+  isRevised: boolean;
+}
+
+interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  mode: ChatMode;
+  content: string;
+  status: "pending" | "streaming" | "done" | "error";
+  modelName?: string;
+  sources?: SourceMeta[];
+  agentTrace?: AgentTrace;
+}
+
+type ChatAction =
+  | { type: "START_REQUEST"; payload: { msgId: string; mode: ChatMode; modelName: string } }
+  | { type: "STAGE_UPDATE"; payload: { msgId: string; stage: AgentStage } }
+  | { type: "AGENT_NOTE_RECEIVED"; payload: { msgId: string; note: AgentTraceLog } }
+  | { type: "SOURCES_RECEIVED"; payload: { msgId: string; sources: SourceMeta[] } }
+  | { type: "FINAL_STREAM"; payload: { msgId: string; chunk: string } }
+  | { type: "FOLLOWUP_RECEIVED"; payload: { msgId: string; text: string } }
+  | { type: "REQUEST_COMPLETED"; payload: { msgId: string } }
+  | { type: "REQUEST_FAILED"; payload: { msgId: string; message: string } }
+  | { type: "ABORT"; payload: { msgId: string } }
+  | { type: "RESET_CONVERSATION" };
+
+const messages = ref<ChatMessage[]>([]);
 const loading = ref(false);
 const tagsOptions = ref<string[]>([]);
+const activeMsgId = ref<string | null>(null);
+const activeController = ref<AbortController | null>(null);
 
 onMounted(async () => {
     try {
@@ -204,9 +292,149 @@ const scrollBottom = () => {
 const formatSourceReference = (source: any) => {
   const title = source.doc_uuid ? (source.file_name || source.source || t("chat.document")) : t("chat.unknownSource");
   if (source.page_number) {
-    return t("chat.sourceReferenceWithPage", { title, page: source.page_number });
+    return t("chat.sourceReferenceWithPage", { title, page: formatPageValue(source.page_number) });
   }
   return t("chat.sourceReferenceWithoutPage", { title });
+};
+
+const formatPageValue = (page: unknown) => {
+  if (typeof page === "number") {
+    return Number.isInteger(page) ? String(page) : String(page);
+  }
+  if (typeof page === "string") {
+    const numeric = Number(page);
+    if (!Number.isNaN(numeric) && Number.isInteger(numeric)) {
+      return String(numeric);
+    }
+  }
+  return String(page);
+};
+
+const stageLabel = (stage: AgentStage) => {
+  const labels: Record<AgentStage, string> = {
+    idle: t("chat.stageIdle"),
+    planning: t("chat.stagePlanning"),
+    query_rewriting: t("chat.stageQueryRewriting"),
+    retrieving: t("chat.stageRetrieving"),
+    drafting: t("chat.stageDrafting"),
+    reviewing: t("chat.stageReviewing"),
+    revising: t("chat.stageRevising"),
+    generating_final: t("chat.stageGeneratingFinal"),
+    followup: t("chat.stageFollowup"),
+    done: t("chat.stageDone"),
+    error: t("chat.stageError"),
+  };
+  return labels[stage];
+};
+
+const dedupeSources = (rawSources: SourceMeta[]) => {
+  const uniqueSources: SourceMeta[] = [];
+  const seenFiles = new Set<string>();
+
+  rawSources.forEach((s) => {
+    const fileName = String(s.file_name || s.source || s.doc_uuid || "Unknown");
+    if (!seenFiles.has(fileName)) {
+      seenFiles.add(fileName);
+      uniqueSources.push(s);
+    }
+  });
+
+  return uniqueSources;
+};
+
+const parseEventPayload = (data: string): unknown => {
+  try {
+    const parsed = JSON.parse(data);
+    return parsed !== null && typeof parsed === "object" ? parsed : data;
+  } catch {
+    return data;
+  }
+};
+
+const updateMessageById = (msgId: string, updater: (msg: ChatMessage) => void) => {
+  const msg = messages.value.find((item) => item.id === msgId);
+  if (msg) {
+    updater(msg);
+  }
+};
+
+const dispatch = (action: ChatAction) => {
+  switch (action.type) {
+    case "START_REQUEST":
+      messages.value.push({
+        id: action.payload.msgId,
+        role: "assistant",
+        mode: action.payload.mode,
+        content: "",
+        status: "pending",
+        modelName: action.payload.modelName,
+        sources: [],
+        agentTrace: action.payload.mode === "agent"
+          ? { currentStage: "idle", logs: [], isRevised: false }
+          : undefined,
+      });
+      return;
+    case "STAGE_UPDATE":
+      updateMessageById(action.payload.msgId, (msg) => {
+        msg.agentTrace ??= { currentStage: "idle", logs: [], isRevised: false };
+        msg.agentTrace.currentStage = action.payload.stage;
+        if (action.payload.stage === "revising") {
+          msg.agentTrace.isRevised = true;
+        }
+      });
+      return;
+    case "AGENT_NOTE_RECEIVED":
+      updateMessageById(action.payload.msgId, (msg) => {
+        msg.agentTrace ??= { currentStage: "idle", logs: [], isRevised: false };
+        msg.agentTrace.logs.push(action.payload.note);
+      });
+      return;
+    case "SOURCES_RECEIVED":
+      updateMessageById(action.payload.msgId, (msg) => {
+        msg.sources = dedupeSources(action.payload.sources);
+      });
+      return;
+    case "FINAL_STREAM":
+      updateMessageById(action.payload.msgId, (msg) => {
+        msg.status = "streaming";
+        msg.content += action.payload.chunk;
+      });
+      return;
+    case "FOLLOWUP_RECEIVED":
+      updateMessageById(action.payload.msgId, (msg) => {
+        msg.status = "done";
+        msg.content = action.payload.text;
+        if (msg.agentTrace) {
+          msg.agentTrace.currentStage = "followup";
+        }
+      });
+      return;
+    case "REQUEST_COMPLETED":
+      updateMessageById(action.payload.msgId, (msg) => {
+        msg.status = "done";
+        if (msg.agentTrace) {
+          msg.agentTrace.currentStage = "done";
+        }
+      });
+      return;
+    case "REQUEST_FAILED":
+      updateMessageById(action.payload.msgId, (msg) => {
+        msg.status = "error";
+        msg.content = msg.content || `[${t("chat.errorPrefix")}: ${action.payload.message}]`;
+        if (msg.agentTrace) {
+          msg.agentTrace.currentStage = "error";
+        }
+      });
+      return;
+    case "ABORT":
+      updateMessageById(action.payload.msgId, (msg) => {
+        msg.status = "done";
+      });
+      return;
+    case "RESET_CONVERSATION":
+      messages.value = [];
+      return;
+  }
 };
 
 const startChat = async () => {
@@ -221,54 +449,110 @@ const startChat = async () => {
     gemini: 'Gemini',
   };
   const currentModelName = modelNameMap[selectedModel.value] || selectedModel.value;
+  const msgId = `msg-${Math.random().toString(36).slice(2, 10)}`;
+  activeMsgId.value = msgId;
   
   // Add User Message
-  messages.value.push({ role: 'user', content: userInput });
+  messages.value.push({ id: `${msgId}-user`, role: 'user', mode: selectedMode.value, content: userInput, status: "done" });
   scrollBottom();
   
-  // Add Assistant Placeholder
-  const assistantMsg = reactive<Message>({ role: 'assistant', content: "", modelName: currentModelName, sources: [] });
-  messages.value.push(assistantMsg);
+  dispatch({ type: "START_REQUEST", payload: { msgId, mode: selectedMode.value, modelName: currentModelName } });
+  scrollBottom();
   
   loading.value = true;
+  const controller = new AbortController();
+  activeController.value = controller;
   try {
     await streamSsePost(
       apiUrl(`/api/v1/chat?conversationId=${encodeURIComponent(conversationId.value)}`),
-      { userInput, tags: selectedTag.value ? [selectedTag.value] : [], modelId: selectedModel.value },
+      {
+        userInput,
+        tags: selectedTag.value ? [selectedTag.value] : [],
+        modelId: selectedModel.value,
+        mode: selectedMode.value,
+        msgId,
+      },
       (event, data) => {
-        if (event === 'sources') {
-            try {
-                const rawSources = JSON.parse(data);
-                // Deduplicate sources by filename
-                const uniqueSources = [];
-                const seenFiles = new Set();
-                
-                rawSources.forEach((s: any) => {
-                    const fileName = s.source || 'Unknown';
-                    if (!seenFiles.has(fileName)) {
-                        seenFiles.add(fileName);
-                        uniqueSources.push(s);
-                    }
-                });
-                
-                assistantMsg.sources = uniqueSources;
-            } catch(e) { console.error("Failed to parse sources", e); }
-        } else if (event === 'message') {
-            assistantMsg.content += data;
+        const payload = parseEventPayload(data);
+        if (event === "agent_stage" && typeof payload === "object" && payload !== null) {
+          const stagePayload = payload as { msgId?: string; stage?: AgentStage };
+          if (stagePayload.msgId && stagePayload.stage) {
+            dispatch({ type: "STAGE_UPDATE", payload: { msgId: stagePayload.msgId, stage: stagePayload.stage } });
+          }
+        } else if (event === "agent_note" && typeof payload === "object" && payload !== null) {
+          const notePayload = payload as { msgId?: string; stage?: AgentStage; kind?: AgentTraceLog["kind"]; text?: string; timestamp?: number };
+          if (notePayload.msgId && notePayload.stage && notePayload.kind && notePayload.text) {
+            dispatch({
+              type: "AGENT_NOTE_RECEIVED",
+              payload: {
+                msgId: notePayload.msgId,
+                note: {
+                  stage: notePayload.stage,
+                  kind: notePayload.kind,
+                  text: notePayload.text,
+                  timestamp: notePayload.timestamp || Date.now(),
+                },
+              },
+            });
+          }
+        } else if (event === "sources") {
+          if (Array.isArray(payload)) {
+            dispatch({ type: "SOURCES_RECEIVED", payload: { msgId, sources: payload as SourceMeta[] } });
+          } else if (typeof payload === "object" && payload !== null) {
+            const sourcePayload = payload as { msgId?: string; sources?: SourceMeta[] };
+            if (sourcePayload.msgId && Array.isArray(sourcePayload.sources)) {
+              dispatch({ type: "SOURCES_RECEIVED", payload: { msgId: sourcePayload.msgId, sources: sourcePayload.sources } });
+            }
+          }
+        } else if (event === "message") {
+          if (typeof payload === "string") {
+            dispatch({ type: "FINAL_STREAM", payload: { msgId, chunk: payload } });
+          } else if (typeof payload === "object" && payload !== null) {
+            const messagePayload = payload as { msgId?: string; chunk?: string };
+            if (messagePayload.msgId && messagePayload.chunk) {
+              dispatch({ type: "FINAL_STREAM", payload: { msgId: messagePayload.msgId, chunk: messagePayload.chunk } });
+            }
+          }
+          scrollBottom();
+        } else if (event === "followup" && typeof payload === "object" && payload !== null) {
+          const followupPayload = payload as { msgId?: string; text?: string };
+          if (followupPayload.msgId && followupPayload.text) {
+            dispatch({ type: "FOLLOWUP_RECEIVED", payload: { msgId: followupPayload.msgId, text: followupPayload.text } });
             scrollBottom();
+          }
+        } else if (event === "done" && typeof payload === "object" && payload !== null) {
+          const donePayload = payload as { msgId?: string };
+          if (donePayload.msgId) {
+            dispatch({ type: "REQUEST_COMPLETED", payload: { msgId: donePayload.msgId } });
+          }
+        } else if (event === "error" && typeof payload === "object" && payload !== null) {
+          const errorPayload = payload as { msgId?: string; message?: string };
+          if (errorPayload.msgId && errorPayload.message) {
+            dispatch({ type: "REQUEST_FAILED", payload: { msgId: errorPayload.msgId, message: errorPayload.message } });
+          }
         }
       },
-      getAuthHeader()
+      controller.signal
     );
   } catch (err: any) {
-    assistantMsg.content += `\n[${t("chat.errorPrefix")}: ${err?.message || err}]`;
+    if (err?.name === "AbortError") {
+      dispatch({ type: "ABORT", payload: { msgId } });
+    } else {
+      dispatch({ type: "REQUEST_FAILED", payload: { msgId, message: err?.message || String(err) } });
+    }
   } finally {
     loading.value = false;
+    activeController.value = null;
+    activeMsgId.value = null;
   }
 };
 
 const reset = () => {
-  messages.value = [];
+  if (activeController.value && activeMsgId.value) {
+    activeController.value.abort();
+    dispatch({ type: "ABORT", payload: { msgId: activeMsgId.value } });
+  }
+  dispatch({ type: "RESET_CONVERSATION" });
   question.value = "";
   conversationId.value = `conv-${Math.random().toString(36).slice(2, 8)}`;
 };
@@ -453,15 +737,41 @@ const logout = () => {
     justify-content: space-between;
     align-items: center;
     margin-top: 12px;
+    gap: 12px;
 }
 .input-tip {
     font-size: 12px;
     color: #444746;
 }
+.input-controls {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+.mode-select {
+    width: 120px;
+}
 .send-btn {
     border-radius: 50%;
     width: 40px;
     height: 40px;
+}
+
+@media (max-width: 720px) {
+  .chat-input-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .input-controls {
+    width: 100%;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .mode-select {
+    width: 110px;
+  }
 }
 
 /* Messages */
@@ -555,6 +865,60 @@ const logout = () => {
     margin-top: 16px;
     padding-top: 0;
     border-top: 1px solid #f0f0f0; /* Softer border */
+}
+.agent-trace-block {
+    margin-top: 14px;
+}
+.agent-stage-line {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+.agent-stage-pill,
+.agent-revised-badge {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 500;
+}
+.agent-stage-pill {
+    background: #e8f0fe;
+    color: #1a73e8;
+}
+.agent-revised-badge {
+    background: #eef7e8;
+    color: #3b7a1c;
+}
+.agent-trace-panel {
+    margin-top: 10px;
+    background: #f8fafc;
+    border: 1px solid #e5eaf3;
+    border-radius: 14px;
+    padding: 10px 14px;
+}
+.agent-trace-panel summary {
+    cursor: pointer;
+    font-size: 13px;
+    color: #444746;
+    font-weight: 500;
+}
+.agent-trace-log {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+    font-size: 13px;
+    line-height: 1.5;
+}
+.agent-log-stage {
+    flex: 0 0 auto;
+    color: #1a73e8;
+    font-weight: 600;
+}
+.agent-log-text {
+    color: #444746;
 }
 .sources-title {
     font-size: 13px;

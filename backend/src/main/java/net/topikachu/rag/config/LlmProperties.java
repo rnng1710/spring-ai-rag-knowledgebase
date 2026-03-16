@@ -13,6 +13,7 @@ public class LlmProperties {
     @Value("${DEEPSEEK_API_KEY}")
     private String apiKey;
     private String baseUrl = "https://api.deepseek.com";
+    private int readTimeoutMs = 60000;
     private Chat chat = new Chat();
 
     @Data

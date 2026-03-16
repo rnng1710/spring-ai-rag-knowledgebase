@@ -1,4 +1,4 @@
-import { getAuthHeader, apiUrl } from "./client";
+import { apiUrl, ensureValidAccessToken, refreshTokens } from "./client";
 
 export interface EtlMessage {
     docUuid: string;
@@ -18,13 +18,31 @@ export const connectSse = async (onMessage: MessageHandler) => {
     controller = new AbortController();
 
     try {
-        const response = await fetch(apiUrl("/api/v1/sse/subscribe"), {
-            headers: {
-                Authorization: getAuthHeader(),
-                Accept: "text/event-stream",
-            },
-            signal: controller.signal,
-        });
+        const openStream = async (allowRetry = true) => {
+            const token = await ensureValidAccessToken();
+            const response = await fetch(apiUrl("/api/v1/sse/subscribe"), {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    Accept: "text/event-stream",
+                },
+                signal: controller?.signal,
+            });
+
+            if (response.status === 401 && allowRetry) {
+                const refreshed = await refreshTokens();
+                return fetch(apiUrl("/api/v1/sse/subscribe"), {
+                    headers: {
+                        Authorization: `Bearer ${refreshed.access_token}`,
+                        Accept: "text/event-stream",
+                    },
+                    signal: controller?.signal,
+                });
+            }
+
+            return response;
+        };
+
+        const response = await openStream();
 
         if (!response.ok) {
             console.error("SSE connection failed:", response.status);

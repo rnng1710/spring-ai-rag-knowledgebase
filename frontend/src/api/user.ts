@@ -1,4 +1,4 @@
-import { apiUrl, getAuthHeader } from "./client";
+import { apiUrl, authFetch } from "./client";
 
 export type UserRole = "ADMIN" | "USER";
 
@@ -51,17 +51,14 @@ const parseEnvelope = async <T>(res: Response): Promise<T> => {
 const USERS_BASE = "/api/v1/admin/users";
 
 export const getUsers = async () => {
-  const res = await fetch(apiUrl(USERS_BASE), {
-    headers: { Authorization: getAuthHeader() }
-  });
+  const res = await authFetch(apiUrl(USERS_BASE));
   return await parseEnvelope<User[]>(res);
 };
 
 export const createUser = async (payload: CreateUserRequest) => {
-  const res = await fetch(apiUrl(USERS_BASE), {
+  const res = await authFetch(apiUrl(USERS_BASE), {
     method: "POST",
     headers: {
-      Authorization: getAuthHeader(),
       "Content-Type": "application/json"
     },
     body: JSON.stringify(payload)
@@ -70,18 +67,16 @@ export const createUser = async (payload: CreateUserRequest) => {
 };
 
 export const deleteUser = async (id: string | number) => {
-  const res = await fetch(apiUrl(`${USERS_BASE}/${encodeURIComponent(String(id))}`), {
-    method: "DELETE",
-    headers: { Authorization: getAuthHeader() }
+  const res = await authFetch(apiUrl(`${USERS_BASE}/${encodeURIComponent(String(id))}`), {
+    method: "DELETE"
   });
   return await parseEnvelope<void>(res);
 };
 
 export const resetUserPassword = async (id: string | number, newPassword: string) => {
-  const res = await fetch(apiUrl(`${USERS_BASE}/${encodeURIComponent(String(id))}/password`), {
+  const res = await authFetch(apiUrl(`${USERS_BASE}/${encodeURIComponent(String(id))}/password`), {
     method: "PUT",
     headers: {
-      Authorization: getAuthHeader(),
       "Content-Type": "application/json"
     },
     body: JSON.stringify({ password: newPassword })

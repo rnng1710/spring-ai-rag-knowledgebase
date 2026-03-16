@@ -55,7 +55,7 @@
 import { ref } from "vue";
 import { ElMessage } from "element-plus";
 import { useRouter } from "vue-router";
-import { apiUrl, getAuthHeader } from "../api/client";
+import { apiUrl, authFetch } from "../api/client";
 import { clearAuthSession, getAccessToken, getUsernameFromAccessToken } from "../utils/auth";
 import { useI18n } from "vue-i18n";
 
@@ -89,11 +89,8 @@ const upload = async () => {
   form.append("overwrite", overwrite.value ? "true" : "false");
 
   try {
-    const response = await fetch(apiUrl("/api/v1/docs/upload"), {
+    const response = await authFetch(apiUrl("/api/v1/docs/upload"), {
       method: "POST",
-      headers: {
-        Authorization: getAuthHeader()
-      },
       body: form
     });
     let payload: any = null;
