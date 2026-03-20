@@ -1,9 +1,10 @@
 package net.topikachu.rag.agent;
 
 import lombok.extern.slf4j.Slf4j;
+import net.topikachu.rag.ai.memory.BlockingChatMemoryService;
+import net.topikachu.rag.service.chat.ReactiveChatGateway;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategy;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategyFactory;
-import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.UserMessage;
@@ -25,9 +26,11 @@ import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 @Slf4j
 public class AgentChatService {
 
+    //TODO 用户端聊天界面，问题多了之后，无法拉回到之前的问题。
     private final AgentExecutor executor;
     private final ChatModelStrategyFactory strategyFactory;
-    private final ChatMemory chatMemory;
+    private final BlockingChatMemoryService blockingChatMemoryService;
+    private final ReactiveChatGateway reactiveChatGateway;
     private final MessageChatMemoryAdvisor messageChatMemoryAdvisor;
 
     @Value("${rag.retrieval.max-context-chars:8000}")
@@ -35,10 +38,13 @@ public class AgentChatService {
 
     public AgentChatService(AgentExecutor executor,
                             ChatModelStrategyFactory strategyFactory,
-                            ChatMemory chatMemory) {
+                            ChatMemory chatMemory,
+                            BlockingChatMemoryService blockingChatMemoryService,
+                            ReactiveChatGateway reactiveChatGateway) {
         this.executor = executor;
         this.strategyFactory = strategyFactory;
-        this.chatMemory = chatMemory;
+        this.blockingChatMemoryService = blockingChatMemoryService;
+        this.reactiveChatGateway = reactiveChatGateway;
         this.messageChatMemoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory).build();
     }
 
@@ -63,20 +69,19 @@ public class AgentChatService {
                             ));
 
                     if (result.isFollowup()) {
-                        chatMemory.add(conversationId, List.of(
-                                new UserMessage(userInput),
-                                new AssistantMessage(result.followup())));
-                        return Flux.concat(
-                                traceEvents,
-                                Flux.just(
-                                        buildEvent("followup", Map.of("msgId", msgId, "text", result.followup())),
-                                        buildEvent("done", Map.of("msgId", msgId))));
+                        return blockingChatMemoryService.add(conversationId, List.of(
+                                        new UserMessage(userInput),
+                                        new AssistantMessage(result.followup())))
+                                .thenMany(Flux.concat(
+                                        traceEvents,
+                                        Flux.just(
+                                                buildEvent("followup", Map.of("msgId", msgId, "text", result.followup())),
+                                                buildEvent("done", Map.of("msgId", msgId)))));
                     }
 
                     List<Document> docs = result.sources();
                     String context = buildContext(docs);
                     ChatModelStrategy strategy = strategyFactory.getStrategy(modelId);
-                    ChatClient chatClient = strategy.getChatClient();
 
                     Map<String, Object> sourcePayload = new LinkedHashMap<>();
                     sourcePayload.put("msgId", msgId);
@@ -84,16 +89,16 @@ public class AgentChatService {
 
                     Flux<ServerSentEvent<Object>> sourceEvent = Flux.just(buildEvent("sources", sourcePayload));
                     StringBuilder finalAnswerBuffer = new StringBuilder();
-                    Flux<ServerSentEvent<Object>> messageStream = chatClient.prompt()
-                            .system(s -> s.text(buildAnswerPrompt())
-                                    .param("context", context)
-                                    .param("draft", buildDraftSection(result.draft()))
-                                    .param("revisionInstruction", buildRevisionInstruction(result.finalInstruction())))
-                            .user(userInput)
-                            .advisors(messageChatMemoryAdvisor)
-                            .advisors(spec -> spec.param(CONVERSATION_ID, conversationId))
-                            .stream()
-                            .content()
+                    Flux<ServerSentEvent<Object>> messageStream = reactiveChatGateway.stream(
+                                    strategy.getChatClient(),
+                                    buildAnswerPrompt(),
+                                    Map.of(
+                                            "context", context,
+                                            "draft", buildDraftSection(result.draft()),
+                                            "revisionInstruction", buildRevisionInstruction(result.finalInstruction())),
+                                    userInput,
+                                    conversationId,
+                                    messageChatMemoryAdvisor)
                             .doOnNext(finalAnswerBuffer::append)
                             .doOnComplete(() -> log.info("Agent {} answer for userInput='{}': {}",
                                     result.revised() ? "second-pass" : "first-pass final",

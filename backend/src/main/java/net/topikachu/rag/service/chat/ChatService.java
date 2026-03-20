@@ -6,7 +6,6 @@ import net.topikachu.rag.evaluation.EvaluationConfig;
 import net.topikachu.rag.evaluation.EvaluationResultItem;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategy;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategyFactory;
-import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.document.Document;
@@ -15,7 +14,6 @@ import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -35,6 +33,7 @@ public class ChatService {
     private final HybridSearchService hybridSearchService;
     private final RerankService rerankService;
     private final ChatModelStrategyFactory strategyFactory;
+    private final ReactiveChatGateway reactiveChatGateway;
     private final MessageChatMemoryAdvisor messageChatMemoryAdvisor;
 
     @Value("${rag.retrieval.hybrid-topk:20}")
@@ -48,11 +47,13 @@ public class ChatService {
 
     public ChatService(ChatMemory chatMemory,
             HybridSearchService hybridSearchService, RerankService rerankService,
-            ChatModelStrategyFactory strategyFactory) {
+            ChatModelStrategyFactory strategyFactory,
+            ReactiveChatGateway reactiveChatGateway) {
         this.chatMemory = chatMemory;
         this.hybridSearchService = hybridSearchService;
         this.rerankService = rerankService;
         this.strategyFactory = strategyFactory;
+        this.reactiveChatGateway = reactiveChatGateway;
 
         this.messageChatMemoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory).build();
     }
@@ -62,8 +63,7 @@ public class ChatService {
 
     public Mono<List<Document>> retrieveForEvaluation(String query, boolean useSparseSearch, boolean useRerank, int topK) {
         int fetchK = useRerank ? hybridTopK : topK;
-        return Mono.fromCallable(() -> hybridSearchService.hybridSearch(query, null, fetchK, useSparseSearch))
-                .subscribeOn(Schedulers.boundedElastic())
+        return hybridSearchService.hybridSearch(query, null, fetchK, useSparseSearch)
                 .flatMap(candidates -> {
                     if (useRerank) {
                         return rerankService.rerank(query, candidates, topK);
@@ -79,10 +79,11 @@ public class ChatService {
                 filterTags, modelId);
 
         long searchStart = System.currentTimeMillis();
-        return Mono.fromCallable(() -> hybridSearchService.hybridSearch(userInput, filterTags, hybridTopK))
-                .subscribeOn(Schedulers.boundedElastic())
+        return hybridSearchService.hybridSearch(userInput, filterTags, hybridTopK)
                 .doOnNext(candidates -> log.debug("Hybrid search returned {} candidates in {}ms",
                         candidates.size(), System.currentTimeMillis() - searchStart))
+                .doOnError(error -> log.error("Retrieval stage failed for query='{}', conversationId={}",
+                        userInput, conversationId, error))
                 .flatMap(candidates -> {
                     long rerankStart = System.currentTimeMillis();
                     return rerankService.rerank(userInput, candidates, rerankTopK)
@@ -95,16 +96,13 @@ public class ChatService {
 
                     // 4. Resolve the strategy and stream response
                     ChatModelStrategy strategy = strategyFactory.getStrategy(modelId);
-                    ChatClient chatClient = strategy.getChatClient();
-
-                    Flux<String> flux = chatClient.prompt()
-                            .system(s -> s.text(strategy.getSystemPromptTemplate())
-                                    .param("context", context))
-                            .user(userInput)
-                            .advisors(messageChatMemoryAdvisor)
-                            .advisors(spec -> spec.param(CONVERSATION_ID, conversationId))
-                            .stream()
-                            .content();
+                    Flux<String> flux = reactiveChatGateway.stream(
+                            strategy.getChatClient(),
+                            strategy.getSystemPromptTemplate(),
+                            Map.of("context", context),
+                            userInput,
+                            conversationId,
+                            messageChatMemoryAdvisor);
 
                     return new ChatStreamResponse(flux, docs);
                 });
@@ -122,7 +120,8 @@ public class ChatService {
             Resource baselinePromptResource,
             Resource optimizedPromptResource,
             String modelId) {
-        return evaluateQuery(question, groundTruth, config, baselinePromptResource, optimizedPromptResource, rerankTopK, modelId);
+        return evaluateQuery(question, groundTruth, config, baselinePromptResource, optimizedPromptResource, rerankTopK,
+                modelId, true);
     }
 
     public Mono<EvaluationResultItem> evaluateQuery(
@@ -133,7 +132,19 @@ public class ChatService {
             Resource optimizedPromptResource,
             int topK,
             String modelId) {
+        return evaluateQuery(question, groundTruth, config, baselinePromptResource, optimizedPromptResource, topK,
+                modelId, true);
+    }
 
+    public Mono<EvaluationResultItem> evaluateQuery(
+            String question,
+            String groundTruth,
+            EvaluationConfig config,
+            Resource baselinePromptResource,
+            Resource optimizedPromptResource,
+            int topK,
+            String modelId,
+            boolean allowModelFallback) {
         long startTime = System.currentTimeMillis();
 
         return retrieveForEvaluation(question, config.useSparseSearch(), config.useRerank(), topK)
@@ -161,25 +172,21 @@ public class ChatService {
                     String contextText = contextTextBuilder.toString();
                     String systemPromptText = loadPromptText(config, baselinePromptResource, optimizedPromptResource);
 
-                    ChatClient chatClient = strategyFactory.getStrategy(modelId).getChatClient();
-                    String generatedAnswer = chatClient.prompt()
-                            .system(s -> s.text(systemPromptText)
-                                    .param("context", contextText)
-                                    .param("question", question))
-                            .user(question)
-                            .call()
-                            .content();
-
-                    log.info("Evaluation query completed in {}ms. Length of answer: {}",
-                            System.currentTimeMillis() - startTime, generatedAnswer.length());
-
-                    return Mono.just(new EvaluationResultItem(
-                            question,
-                            groundTruth,
-                            generatedAnswer,
-                            contextNodes));
+                    return reactiveChatGateway.call(
+                                    strategyFactory.getStrategy(modelId).getChatClient(),
+                                    systemPromptText,
+                                    Map.of("context", contextText, "question", question),
+                                    question)
+                            .map(generatedAnswer -> {
+                                log.info("Evaluation query completed in {}ms. Length of answer: {}",
+                                        System.currentTimeMillis() - startTime, generatedAnswer.length());
+                                return new EvaluationResultItem(
+                                        question,
+                                        groundTruth,
+                                        generatedAnswer,
+                                        contextNodes);
+                            });
                 })
-                .subscribeOn(Schedulers.boundedElastic())
                 .retryWhen(reactor.util.retry.Retry.backoff(3, java.time.Duration.ofSeconds(2))
                         .filter(throwable -> {
                             // Can add specific sub-exceptions if needed, but for now retry on most runtime exceptions from APIs
@@ -189,10 +196,14 @@ public class ChatService {
                                 modelId, retrySignal.failure().getMessage(), retrySignal.totalRetriesInARow() + 1, 3)))
                 .onErrorResume(e -> {
                     log.error("[{}] API definitively failed after retries: {}", modelId, e.getMessage());
-                    if (!"ollama".equals(modelId)) {
+                    if (allowModelFallback && !"ollama".equals(modelId)) {
                         log.warn("=== 触发降级机制 === 切换至本地大模型 (ollama) 作兜底回复");
                         // Recursively call evaluateQuery but force the modelId to be 'ollama'
-                        return evaluateQuery(question, groundTruth, config, baselinePromptResource, optimizedPromptResource, topK, "ollama");
+                        return evaluateQuery(question, groundTruth, config, baselinePromptResource,
+                                optimizedPromptResource, topK, "ollama", true);
+                    }
+                    if (!allowModelFallback) {
+                        return Mono.error(e);
                     }
                     // Ultimate fallback if even Ollama fails or if the original request was already for Ollama
                     return Mono.just(new EvaluationResultItem(

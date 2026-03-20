@@ -14,7 +14,7 @@ public class EtlConfiguration {
 	@Bean
 	TextSplitter textSplitter() {
 		// [修改后] Chunk: 400, Overlap: 80。适配 Reranker (max_length=512) 限制。
-		return new Langchain4jSplitterAdapter(400, 80);
+		return new Langchain4jSplitterAdapter(200, 80);
 	}
 
 	@Bean

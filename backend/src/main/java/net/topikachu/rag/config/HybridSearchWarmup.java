@@ -2,6 +2,7 @@ package net.topikachu.rag.config;
 
 import lombok.extern.slf4j.Slf4j;
 import net.topikachu.rag.service.chat.HybridSearchService;
+import net.topikachu.rag.service.etl.EtlJobStarter;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
@@ -17,19 +18,18 @@ import org.springframework.stereotype.Component;
 public class HybridSearchWarmup implements CommandLineRunner {
 
     private final HybridSearchService hybridSearchService;
+    private final EtlJobStarter etlJobStarter;
 
-    public HybridSearchWarmup(HybridSearchService hybridSearchService) {
+    public HybridSearchWarmup(HybridSearchService hybridSearchService, EtlJobStarter etlJobStarter) {
         this.hybridSearchService = hybridSearchService;
+        this.etlJobStarter = etlJobStarter;
     }
 
     @Override
     public void run(String... args) throws Exception {
         log.info("=== Starting Hybrid Search Warmup ===");
-        try {
-            hybridSearchService.warmup();
-            log.info("=== Hybrid Search Warmup Complete ===");
-        } catch (Exception e) {
-            log.warn("Hybrid Search Warmup failed (non-critical): {}", e.getMessage());
-        }
+        etlJobStarter.start(
+                hybridSearchService.warmup(),
+                "Hybrid search warmup");
     }
 }

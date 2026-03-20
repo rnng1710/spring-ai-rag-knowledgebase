@@ -19,6 +19,7 @@ public class EtlWatchdog {
 
     private final DocumentMapper documentMapper;
     private final HybridVectorWriter hybridVectorWriter;
+    private final EtlJobStarter etlJobStarter;
 
     /**
      * Watchdog task to clean up stuck ETL processes.
@@ -28,7 +29,8 @@ public class EtlWatchdog {
      */
     @Scheduled(cron = "0 0/5 * * * ?")
     public void cleanupStuckDocuments() {
-        LocalDateTime timeoutThreshold = LocalDateTime.now().minusMinutes(10);
+        log.info("看门狗扫描中...");
+        LocalDateTime timeoutThreshold = LocalDateTime.now().minusMinutes(15);
 
         List<Document> stuckDocs = documentMapper.selectList(Wrappers.<Document>lambdaQuery()
                 .in(Document::getStatus,
@@ -57,8 +59,9 @@ public class EtlWatchdog {
 
                 if (rows > 0) {
                     log.warn("Watchdog marked document {} as FAILED", doc.getDocUuid());
-                    // 2. Clean up potentially partial vectors
-                    hybridVectorWriter.deleteByDocUuid(doc.getDocUuid()).subscribe();
+                    etlJobStarter.start(
+                            hybridVectorWriter.deleteByDocUuid(doc.getDocUuid()),
+                            "Watchdog cleanup " + doc.getDocUuid());
                 }
             } catch (Exception e) {
                 log.error("Watchdog failed to process stuck document {}", doc.getDocUuid(), e);

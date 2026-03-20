@@ -2,13 +2,13 @@ package net.topikachu.rag.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import net.topikachu.rag.service.chat.ReactiveChatGateway;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategy;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategyFactory;
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -23,112 +23,186 @@ public class AgentExecutor {
 
     private final AgentTools tools;
     private final ChatModelStrategyFactory strategyFactory;
+    private final ReactiveChatGateway reactiveChatGateway;
     private final ObjectMapper objectMapper = new ObjectMapper();
-
-    @Value("${rag.agent.max-steps:3}")
-    private int maxSteps;
 
     @Value("${rag.agent.timeout-ms:12000}")
     private long timeoutMs;
 
-    public AgentExecutor(AgentTools tools, ChatModelStrategyFactory strategyFactory) {
+    public AgentExecutor(AgentTools tools,
+            ChatModelStrategyFactory strategyFactory,
+            ReactiveChatGateway reactiveChatGateway) {
         this.tools = tools;
         this.strategyFactory = strategyFactory;
+        this.reactiveChatGateway = reactiveChatGateway;
     }
 
     public Mono<AgentExecutionResult> execute(String userInput, List<String> tags, String modelId) {
-        return Mono.fromCallable(() -> runReflectionPipeline(userInput, tags, modelId))
-                .subscribeOn(Schedulers.boundedElastic());
-    }
-
-    private AgentExecutionResult runReflectionPipeline(String userInput, List<String> tags, String modelId) {
         ChatModelStrategy strategy = strategyFactory.getStrategy(modelId);
         List<AgentNote> notes = new ArrayList<>();
-        List<Document> evidence = new ArrayList<>();
-        boolean revised = false;
+        List<Document> initialEvidence = new ArrayList<>();
 
         addNote(notes, AgentStage.PLANNING, "decision", "正在规划检索与回答步骤。");
 
-        AgentDecision decision = decideNext(strategy, userInput, evidence, tags);
-        String action = normalizeAction(decision.action());
-        if ("followup".equals(action)) {
-            String followup = defaultFollowup(decision.followup());
-            addNote(notes, AgentStage.FOLLOWUP, "decision", "问题关键信息不足，先向用户追问。");
-            return new AgentExecutionResult(List.of(), notes, followup, null, null, false);
-        }
+        return decideNext(strategy, userInput, initialEvidence, tags)
+                .defaultIfEmpty(new AgentDecision("retrieve", userInput, tags, null))
+                .flatMap(decision -> {
+                    String action = normalizeAction(decision.action());
+                    if ("followup".equals(action)) {
+                        addNote(notes, AgentStage.FOLLOWUP, "decision", "问题关键信息不足，先向用户追问。");
+                        return Mono.just(new AgentExecutionResult(
+                                List.of(),
+                                notes,
+                                defaultFollowup(decision.followup()),
+                                null,
+                                null,
+                                false));
+                    }
 
-        List<String> effectiveTags = (decision.tags() != null && !decision.tags().isEmpty())
-                ? decision.tags()
-                : tags;
-        String planningQuery = (decision.query() != null && !decision.query().isBlank())
-                ? decision.query()
-                : userInput;
+                    List<String> effectiveTags = (decision.tags() != null && !decision.tags().isEmpty())
+                            ? decision.tags()
+                            : tags;
+                    String planningQuery = (decision.query() != null && !decision.query().isBlank())
+                            ? decision.query()
+                            : userInput;
 
-        addNote(notes, AgentStage.PLANNING, "decision", "已识别原始问题，准备生成检索改写。");
-        addNote(notes, AgentStage.QUERY_REWRITING, "info", "正在将原始问题整理为更适合检索的表达。");
-        AgentRewriteResult rewriteResult = rewriteQuery(strategy, userInput, planningQuery, effectiveTags);
-        String query = normalizeRewriteQuery(userInput, rewriteResult == null ? null : rewriteResult.query());
-        log.info("Agent rewritten query for userInput='{}': {}", userInput, query);
-        addNote(notes, AgentStage.QUERY_REWRITING, "info",
-                safeText(rewriteResult == null ? null : rewriteResult.note(), "已完成检索改写。"));
+                    addNote(notes, AgentStage.PLANNING, "decision", "已识别原始问题，准备生成检索改写。");
+                    addNote(notes, AgentStage.QUERY_REWRITING, "info", "正在将原始问题整理为更适合检索的表达。");
 
-        addNote(notes, AgentStage.RETRIEVING, "retrieval", "正在检索与问题相关的知识库内容。");
-        evidence = retrieveEvidence(query, effectiveTags, evidence);
+                    return rewriteQuery(strategy, userInput, planningQuery, effectiveTags)
+                            .defaultIfEmpty(new AgentRewriteResult(userInput, "已完成检索改写。"))
+                            .flatMap(rewriteResult -> {
+                                String query = normalizeRewriteQuery(userInput, rewriteResult == null ? null : rewriteResult.query());
+                                log.info("Agent rewritten query for userInput='{}': {}", userInput, query);
+                                addNote(notes, AgentStage.QUERY_REWRITING, "info",
+                                        safeText(rewriteResult == null ? null : rewriteResult.note(), "已完成检索改写。"));
+                                addNote(notes, AgentStage.RETRIEVING, "retrieval", "正在检索与问题相关的知识库内容。");
+
+                                return retrieveEvidence(query, effectiveTags, initialEvidence)
+                                        .flatMap(evidence -> buildResultAfterEvidence(
+                                                strategy,
+                                                userInput,
+                                                effectiveTags,
+                                                notes,
+                                                evidence));
+                            });
+                });
+    }
+
+    private Mono<AgentExecutionResult> buildResultAfterEvidence(ChatModelStrategy strategy,
+            String userInput,
+            List<String> effectiveTags,
+            List<AgentNote> notes,
+            List<Document> evidence) {
         if (evidence.isEmpty()) {
             addNote(notes, AgentStage.FOLLOWUP, "decision", "未找到足够证据，转为追问以补齐条件。");
-            return new AgentExecutionResult(List.of(), notes, "未检索到足够证据，请提供更具体的描述或关键词。", null, null, false);
+            return Mono.just(new AgentExecutionResult(
+                    List.of(),
+                    notes,
+                    "未检索到足够证据，请提供更具体的描述或关键词。",
+                    null,
+                    null,
+                    false));
         }
 
         addNote(notes, AgentStage.DRAFTING, "info", "正在基于检索证据生成回答草稿。");
         String context = buildContext(evidence);
-        String draft = generateDraft(strategy, userInput, context);
-        log.info("Agent first-pass answer draft for userInput='{}': {}", userInput, draft);
-        addNote(notes, AgentStage.DRAFTING, "info", "已生成草稿，准备进行证据一致性审查。");
 
-        addNote(notes, AgentStage.REVIEWING, "critique", "正在核查结论、引用与证据是否一致。");
-        AgentReviewDecision reviewDecision = reviewDraft(strategy, userInput, context, draft, effectiveTags);
+        return generateDraft(strategy, userInput, context)
+                .flatMap(draft -> {
+                    log.info("Agent first-pass answer draft for userInput='{}': {}", userInput, draft);
+                    addNote(notes, AgentStage.DRAFTING, "info", "已生成草稿，准备进行证据一致性审查。");
+                    addNote(notes, AgentStage.REVIEWING, "critique", "正在核查结论、引用与证据是否一致。");
+
+                    return reviewDraft(strategy, userInput, context, draft, effectiveTags)
+                            .defaultIfEmpty(new AgentReviewDecision("pass", null, null, null))
+                            .flatMap(reviewDecision -> finalizeReview(
+                                    strategy,
+                                    userInput,
+                                    effectiveTags,
+                                    notes,
+                                    evidence,
+                                    draft,
+                                    reviewDecision));
+                });
+    }
+
+    private Mono<AgentExecutionResult> finalizeReview(ChatModelStrategy strategy,
+            String userInput,
+            List<String> effectiveTags,
+            List<AgentNote> notes,
+            List<Document> evidence,
+            String draft,
+            AgentReviewDecision reviewDecision) {
         String verdict = normalizeVerdict(reviewDecision == null ? null : reviewDecision.verdict());
 
         if ("followup".equals(verdict)) {
-            String followup = defaultFollowup(reviewDecision == null ? null : reviewDecision.followup());
-            addNote(notes, AgentStage.FOLLOWUP, "critique", safeText(reviewDecision == null ? null : reviewDecision.critique(),
-                    "现有证据不足以直接回答，先向用户确认关键条件。"));
-            return new AgentExecutionResult(List.of(), notes, followup, draft, null, false);
+            addNote(notes, AgentStage.FOLLOWUP, "critique",
+                    safeText(reviewDecision == null ? null : reviewDecision.critique(),
+                            "现有证据不足以直接回答，先向用户确认关键条件。"));
+            return Mono.just(new AgentExecutionResult(
+                    List.of(),
+                    notes,
+                    defaultFollowup(reviewDecision == null ? null : reviewDecision.followup()),
+                    draft,
+                    null,
+                    false));
         }
 
-        String finalInstruction = null;
-        if ("revise".equals(verdict)) {
-            revised = true;
-            addNote(notes, AgentStage.REVIEWING, "critique", safeText(reviewDecision == null ? null : reviewDecision.critique(),
-                    "已识别到需要补强的证据或表述问题，准备修订答案。"));
+        if (!"revise".equals(verdict)) {
+            addNote(notes, AgentStage.GENERATING_FINAL, "info", "正在生成最终答案。");
+            return Mono.just(new AgentExecutionResult(evidence, notes, null, draft, null, false));
+        }
 
-            if (reviewDecision != null && reviewDecision.query() != null && !reviewDecision.query().isBlank()) {
-                addNote(notes, AgentStage.RETRIEVING, "retrieval", "根据审查结果补充检索证据。");
-                evidence = retrieveEvidence(reviewDecision.query(), effectiveTags, evidence);
-            }
+        addNote(notes, AgentStage.REVIEWING, "critique",
+                safeText(reviewDecision == null ? null : reviewDecision.critique(),
+                        "已识别到需要补强的证据或表述问题，准备修订答案。"));
 
-            if (evidence.isEmpty()) {
+        Mono<List<Document>> evidenceMono;
+        if (reviewDecision != null && reviewDecision.query() != null && !reviewDecision.query().isBlank()) {
+            addNote(notes, AgentStage.RETRIEVING, "retrieval", "根据审查结果补充检索证据。");
+            evidenceMono = retrieveEvidence(reviewDecision.query(), effectiveTags, evidence);
+        } else {
+            evidenceMono = Mono.just(evidence);
+        }
+
+        return evidenceMono.flatMap(updatedEvidence -> {
+            if (updatedEvidence.isEmpty()) {
                 addNote(notes, AgentStage.FOLLOWUP, "decision", "补充检索后仍缺少关键证据，转为追问。");
-                return new AgentExecutionResult(List.of(), notes, "当前仍缺少回答所需的关键信息，请补充时间、对象或具体场景。", draft, null, true);
+                return Mono.just(new AgentExecutionResult(
+                        List.of(),
+                        notes,
+                        "当前仍缺少回答所需的关键信息，请补充时间、对象或具体场景。",
+                        draft,
+                        null,
+                        true));
             }
 
             addNote(notes, AgentStage.REVISING, "info", "正在结合审查意见重写最终答案。");
-            finalInstruction = safeText(reviewDecision.critique(), "请基于证据修正答案，并确保引用准确。");
-        }
-
-        addNote(notes, AgentStage.GENERATING_FINAL, "info", "正在生成最终答案。");
-        return new AgentExecutionResult(evidence, notes, null, draft, finalInstruction, revised);
+            addNote(notes, AgentStage.GENERATING_FINAL, "info", "正在生成最终答案。");
+            return Mono.just(new AgentExecutionResult(
+                    updatedEvidence,
+                    notes,
+                    null,
+                    draft,
+                    safeText(reviewDecision.critique(), "请基于证据修正答案，并确保引用准确。"),
+                    true));
+        });
     }
 
-    private List<Document> retrieveEvidence(String query, List<String> tags, List<Document> existingEvidence) {
-        List<Document> docs = tools.retrieve(query, tags, null)
-                .block(Duration.ofMillis(timeoutMs));
-        return mergeEvidence(existingEvidence, docs);
+    private Mono<List<Document>> retrieveEvidence(String query, List<String> tags, List<Document> existingEvidence) {
+        return tools.retrieve(query, tags, null)
+                .timeout(Duration.ofMillis(timeoutMs))
+                .map(docs -> mergeEvidence(existingEvidence, docs))
+                .onErrorResume(e -> {
+                    log.warn("Agent retrieve failed for query='{}': {}", query, e.getMessage());
+                    return Mono.just(mergeEvidence(existingEvidence, List.of()));
+                });
     }
 
     private List<Document> mergeEvidence(List<Document> existing, List<Document> incoming) {
         if (incoming == null || incoming.isEmpty()) {
-            return (existing == null) ? new ArrayList<>() : existing;
+            return existing == null ? new ArrayList<>() : new ArrayList<>(existing);
         }
 
         Map<String, Document> merged = new LinkedHashMap<>();
@@ -194,7 +268,7 @@ public class AgentExecutor {
         return page.toString();
     }
 
-    private String generateDraft(ChatModelStrategy strategy, String userInput, String context) {
+    private Mono<String> generateDraft(ChatModelStrategy strategy, String userInput, String context) {
         String prompt = """
                 你是校园知识库问答助手。请基于提供的【知识库上下文】先生成一版回答草稿。
 
@@ -209,15 +283,17 @@ public class AgentExecutor {
                 ============================================
                 """;
 
-        return strategy.getChatClient()
-                .prompt()
-                .system(s -> s.text(prompt).param("context", context))
-                .user(userInput)
-                .call()
-                .content();
+        return reactiveChatGateway.call(
+                strategy.getChatClient(),
+                prompt,
+                Map.of("context", context),
+                userInput);
     }
 
-    private AgentRewriteResult rewriteQuery(ChatModelStrategy strategy, String userInput, String planningQuery, List<String> tags) {
+    private Mono<AgentRewriteResult> rewriteQuery(ChatModelStrategy strategy,
+            String userInput,
+            String planningQuery,
+            List<String> tags) {
         String tagSummary = (tags == null || tags.isEmpty()) ? "无" : String.join(", ", tags);
         String prompt = """
                 你是知识库检索查询改写器。你必须输出纯 JSON，不要包含任何其它文本。
@@ -255,17 +331,15 @@ public class AgentExecutor {
                 %s
                 """.formatted(userInput, planningQuery, tagSummary);
 
-        String raw = strategy.getChatClient()
-                .prompt()
-                .system(prompt)
-                .user(userPrompt)
-                .call()
-                .content();
-
-        return parseRewriteResult(raw);
+        return reactiveChatGateway.call(strategy.getChatClient(), prompt, Map.of(), userPrompt)
+                .flatMap(raw -> Mono.justOrEmpty(parseRewriteResult(raw)));
     }
 
-    private AgentReviewDecision reviewDraft(ChatModelStrategy strategy, String userInput, String context, String draft, List<String> tags) {
+    private Mono<AgentReviewDecision> reviewDraft(ChatModelStrategy strategy,
+            String userInput,
+            String context,
+            String draft,
+            List<String> tags) {
         String tagSummary = (tags == null || tags.isEmpty()) ? "无" : String.join(", ", tags);
         String prompt = """
                 你是回答质量审查器。你必须输出纯 JSON，不要包含任何其它文本。
@@ -302,17 +376,11 @@ public class AgentExecutor {
                 %s
                 """.formatted(userInput, tagSummary, context, draft);
 
-        String raw = strategy.getChatClient()
-                .prompt()
-                .system(prompt)
-                .user(userPrompt)
-                .call()
-                .content();
-
-        return parseReviewDecision(raw);
+        return reactiveChatGateway.call(strategy.getChatClient(), prompt, Map.of(), userPrompt)
+                .flatMap(raw -> Mono.justOrEmpty(parseReviewDecision(raw)));
     }
 
-    private AgentDecision decideNext(ChatModelStrategy strategy, String userInput, List<Document> evidence, List<String> tags) {
+    private Mono<AgentDecision> decideNext(ChatModelStrategy strategy, String userInput, List<Document> evidence, List<String> tags) {
         String evidenceSummary = summarizeEvidence(evidence);
         String tagSummary = (tags == null || tags.isEmpty()) ? "无" : String.join(", ", tags);
 
@@ -344,18 +412,11 @@ public class AgentExecutor {
                 %s
                 """.formatted(userInput, evidenceSummary, tagSummary);
 
-        String raw = strategy.getChatClient()
-                .prompt()
-                .system(systemPrompt)
-                .user(userPrompt)
-                .call()
-                .content();
-
-        AgentDecision decision = parseDecision(raw);
-        if (decision == null) {
-            return new AgentDecision("retrieve", userInput, tags, null);
-        }
-        return decision;
+        return reactiveChatGateway.call(strategy.getChatClient(), systemPrompt, Map.of(), userPrompt)
+                .flatMap(raw -> Mono.justOrEmpty(parseDecision(raw)))
+                .map(decision -> decision == null
+                        ? new AgentDecision("retrieve", userInput, tags, null)
+                        : decision);
     }
 
     private AgentReviewDecision parseReviewDecision(String raw) {

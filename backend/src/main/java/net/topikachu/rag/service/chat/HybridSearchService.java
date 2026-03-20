@@ -1,43 +1,28 @@
 package net.topikachu.rag.service.chat;
 
-import com.google.gson.Gson;
-import com.google.gson.JsonObject;
-import io.milvus.v2.client.ConnectConfig;
-import io.milvus.v2.client.MilvusClientV2;
-import io.milvus.v2.service.vector.request.HybridSearchReq;
 import io.milvus.v2.service.vector.request.AnnSearchReq;
+import io.milvus.v2.service.vector.request.HybridSearchReq;
+import io.milvus.v2.service.vector.request.QueryReq;
+import io.milvus.v2.service.vector.request.SearchReq;
 import io.milvus.v2.service.vector.request.data.FloatVec;
 import io.milvus.v2.service.vector.request.data.SparseFloatVec;
 import io.milvus.v2.service.vector.request.ranker.RRFRanker;
-import io.milvus.v2.service.vector.response.SearchResp;
-import io.milvus.v2.service.vector.request.QueryReq;
-import io.milvus.v2.service.vector.response.QueryResp;
 import lombok.extern.slf4j.Slf4j;
-
 import net.topikachu.rag.service.etl.TeiEmbeddingClient;
 import org.springframework.ai.document.Document;
-
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import reactor.core.publisher.Mono;
 
-import jakarta.annotation.PostConstruct;
-import jakarta.annotation.PreDestroy;
-import java.time.Duration;
-import java.util.*;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.SortedMap;
+import java.util.TreeMap;
 
-/**
- * Hybrid Search Service that performs dense + sparse vector search with RRF
- * fusion.
- */
 @Service
 @Slf4j
 public class HybridSearchService {
-
-    @Value("${spring.ai.vectorstore.milvus.client.host:localhost}")
-    private String milvusHost;
-
-    @Value("${spring.ai.vectorstore.milvus.client.port:19530}")
-    private int milvusPort;
 
     @Value("${spring.ai.vectorstore.milvus.collection-name:vector_store}")
     private String collectionName;
@@ -49,84 +34,45 @@ public class HybridSearchService {
     private String sparseVectorField;
 
     @Value("${rag.retrieval.dense-topk:50}")
-    private int denseTopK;
+    private int topK;
 
     @Value("${rag.retrieval.rrf-k:60}")
     private int rrfK;
 
-    @Value("${rag.retrieval.timeout-seconds:30}")
-    private long timeoutSeconds;
-
     private final TeiEmbeddingClient teiEmbeddingClient;
-    private final Gson gson = new Gson();
-    private MilvusClientV2 milvusClient;
+    private final MilvusSearchGateway milvusSearchGateway;
 
-    public HybridSearchService(TeiEmbeddingClient teiEmbeddingClient) {
+    public HybridSearchService(TeiEmbeddingClient teiEmbeddingClient, MilvusSearchGateway milvusSearchGateway) {
         this.teiEmbeddingClient = teiEmbeddingClient;
+        this.milvusSearchGateway = milvusSearchGateway;
     }
 
-    @PostConstruct
-    public void init() {
-        ConnectConfig config = ConnectConfig.builder()
-                .uri("http://" + milvusHost + ":" + milvusPort)
-                .build();
-        this.milvusClient = new MilvusClientV2(config);
-        log.info("HybridSearchService initialized with Milvus at {}:{}", milvusHost, milvusPort);
-    }
-
-    @PreDestroy
-    public void cleanup() {
-        if (milvusClient != null) {
-            milvusClient.close();
-        }
-    }
-
-    /**
-     * Backward compatible method for existing ChatService calls.
-     * Defaults to using sparse (hybrid) search.
-     */
-    public List<Document> hybridSearch(String query, List<String> filterTags, int topK) {
+    public Mono<List<Document>> hybridSearch(String query, List<String> filterTags, int topK) {
         return hybridSearch(query, filterTags, topK, true);
     }
 
-    /**
-     * Perform search with strict branching between Dense-only (SearchReq) and
-     * Hybrid (HybridSearchReq).
-     * Uses TEI for embedding generation.
-     */
-    public List<Document> hybridSearch(String query, List<String> filterTags, int topK, boolean useSparse) {
-        try {
-            // Build filter expression
-            String filterExpr = null;
-            if (filterTags != null && !filterTags.isEmpty()) {
-                filterExpr = String.format("JSON_CONTAINS(metadata[\"tags\"], \"%s\")", filterTags.get(0));
-            }
+    public Mono<List<Document>> hybridSearch(String query, List<String> filterTags, int topK, boolean useSparse) {
+        String filterExpr = buildFilterExpr(filterTags);
+        if (!useSparse) {
+            return teiEmbeddingClient.embedDense(query)
+                    .flatMap(denseVector -> {
+                        SearchReq.SearchReqBuilder<?, ?> builder = SearchReq.builder()
+                                .collectionName(collectionName)
+                                .annsField(denseVectorField)
+                                .data(Collections.singletonList(new FloatVec(denseVector)))
+                                .outputFields(Arrays.asList("doc_id", "content", "metadata"))
+                                .topK(topK);
+                        if (filterExpr != null) {
+                            builder.filter(filterExpr);
+                        }
+                        return milvusSearchGateway.search(builder.build());
+                    })
+                    .doOnError(e -> log.error("Dense search failed. query='{}', filterTags={}", query, filterTags, e))
+                    .onErrorMap(e -> new RetrievalException("知识库检索失败，请检查向量服务、Milvus 连接或筛选条件后重试。", e));
+        }
 
-            if (!useSparse) {
-                // V0: Dense Only. Use standard SearchReq.
-                log.debug("Executing V0 Dense-only SearchReq for query: {}", query);
-                List<Float> denseVector = teiEmbeddingClient.embedDense(query)
-                        .block(Duration.ofSeconds(timeoutSeconds));
-
-                io.milvus.v2.service.vector.request.SearchReq.SearchReqBuilder<?, ?> searchReqBuilder = io.milvus.v2.service.vector.request.SearchReq
-                        .builder()
-                        .collectionName(collectionName)
-                        .annsField(denseVectorField)
-                        .data(Collections.singletonList(new FloatVec(denseVector)))
-                        .outputFields(Arrays.asList("doc_id", "content", "metadata"))
-                        .topK(topK);
-
-                if (filterExpr != null) {
-                    searchReqBuilder.filter(filterExpr);
-                }
-
-                SearchResp response = milvusClient.search(searchReqBuilder.build());
-                return convertToDocuments(response);
-
-            } else {
-                // V1+: Hybrid Search. Use HybridSearchReq with RRF.
-                log.debug("Executing V1+ HybridSearchReq for query: {}", query);
-                return teiEmbeddingClient.embed(query).map(response -> {
+        return teiEmbeddingClient.embed(query)
+                .map(response -> {
                     List<Float> denseVector = Collections.emptyList();
                     if (response.denseVecs() != null && !response.denseVecs().isEmpty()) {
                         denseVector = response.denseVecs().get(0);
@@ -137,143 +83,55 @@ public class HybridSearchService {
                         sparseMap = teiEmbeddingClient.parseSparse(response.sparseVecs().get(0));
                     }
 
-                    FloatVec denseVec = new FloatVec(denseVector);
-                    SparseFloatVec sparseVec = new SparseFloatVec(sparseMap);
-
                     AnnSearchReq.AnnSearchReqBuilder<?, ?> denseReqBuilder = AnnSearchReq.builder()
                             .vectorFieldName(denseVectorField)
-                            .vectors(Collections.singletonList(denseVec))
-                            .topK(denseTopK);
+                            .vectors(Collections.singletonList(new FloatVec(denseVector)))
+                            .topK(this.topK);
 
                     AnnSearchReq.AnnSearchReqBuilder<?, ?> sparseReqBuilder = AnnSearchReq.builder()
                             .vectorFieldName(sparseVectorField)
-                            .vectors(Collections.singletonList(sparseVec))
-                            .topK(denseTopK);
+                            .vectors(Collections.singletonList(new SparseFloatVec(sparseMap)))
+                            .topK(this.topK);
 
-                    // Note: for AnnSearchReq, the builder method is expr(), not filter()
-                    if (filterTags != null && !filterTags.isEmpty()) {
-                        String lambdaFilterExpr = String.format("JSON_CONTAINS(metadata[\"tags\"], \"%s\")",
-                                filterTags.get(0));
-                        denseReqBuilder.expr(lambdaFilterExpr);
-                        sparseReqBuilder.expr(lambdaFilterExpr);
+                    if (filterExpr != null) {
+                        denseReqBuilder.expr(filterExpr);
+                        sparseReqBuilder.expr(filterExpr);
                     }
-
-                    AnnSearchReq denseReq = denseReqBuilder.build();
-                    AnnSearchReq sparseReq = sparseReqBuilder.build();
 
                     return HybridSearchReq.builder()
                             .collectionName(collectionName)
-                            .searchRequests(Arrays.asList(denseReq, sparseReq))
+                            .searchRequests(Arrays.asList(denseReqBuilder.build(), sparseReqBuilder.build()))
                             .ranker(new RRFRanker(rrfK))
                             .topK(topK)
                             .outFields(Arrays.asList("doc_id", "content", "metadata"))
                             .build();
-
-                }).map(hybridReq -> {
-                    SearchResp response = milvusClient.hybridSearch(hybridReq);
-                    return convertToDocuments(response);
-                }).block(Duration.ofSeconds(timeoutSeconds));
-            }
-
-        } catch (Exception e) {
-            log.error("Search failed, falling back to empty results", e);
-            return Collections.emptyList();
-        }
+                })
+                .flatMap(milvusSearchGateway::hybridSearch)
+                .doOnError(e -> log.error("Hybrid search failed. query='{}', filterTags={}", query, filterTags, e))
+                .onErrorMap(e -> new RetrievalException("知识库检索失败，请检查向量服务、Milvus 连接或筛选条件后重试。", e));
     }
 
-    private List<Document> convertToDocuments(SearchResp response) {
-        List<Document> results = new ArrayList<>();
-        List<List<SearchResp.SearchResult>> searchResults = response.getSearchResults();
-        if (searchResults != null && !searchResults.isEmpty()) {
-            for (SearchResp.SearchResult result : searchResults.get(0)) {
-                Map<String, Object> entity = result.getEntity();
-                String id = (String) entity.get("doc_id");
-                String content = (String) entity.get("content");
-
-                // Parse metadata
-                Map<String, Object> metadata = new HashMap<>();
-                Object metaObj = entity.get("metadata");
-                if (metaObj instanceof JsonObject) {
-                    JsonObject jsonMeta = (JsonObject) metaObj;
-                    metadata = gson.fromJson(jsonMeta, Map.class);
-                } else if (metaObj instanceof Map) {
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> castMeta = (Map<String, Object>) metaObj;
-                    metadata = castMeta;
-                }
-                metadata.put("score", result.getScore());
-
-                Document doc = Document.builder()
-                        .id(id)
-                        .text(content)
-                        .metadata(metadata)
-                        .build();
-                results.add(doc);
-            }
-        }
-        return results;
+    public Mono<Document> getByDocId(String docId) {
+        QueryReq queryReq = QueryReq.builder()
+                .collectionName(collectionName)
+                .filter(String.format("doc_id == \"%s\"", docId))
+                .outputFields(Arrays.asList("doc_id", "content", "metadata"))
+                .build();
+        return milvusSearchGateway.queryByDocId(queryReq)
+                .onErrorResume(e -> {
+                    log.warn("Query by doc_id failed: {}", docId, e);
+                    return Mono.empty();
+                });
     }
 
-    public Document getByDocId(String docId) {
-        try {
-            QueryReq queryReq = QueryReq.builder()
-                    .collectionName(collectionName)
-                    .filter(String.format("doc_id == \"%s\"", docId))
-                    .outputFields(Arrays.asList("doc_id", "content", "metadata"))
-                    .build();
-            QueryResp response = milvusClient.query(queryReq);
-            List<Document> docs = convertQueryToDocuments(response);
-            if (docs.isEmpty()) {
-                return null;
-            }
-            return docs.get(0);
-        } catch (Exception e) {
-            log.warn("Query by doc_id failed: {}", docId, e);
+    public Mono<Void> warmup() {
+        return hybridSearch("warmup query", null, 1).then();
+    }
+
+    private String buildFilterExpr(List<String> filterTags) {
+        if (filterTags == null || filterTags.isEmpty()) {
             return null;
         }
-    }
-
-    private List<Document> convertQueryToDocuments(QueryResp response) {
-        List<Document> results = new ArrayList<>();
-        List<QueryResp.QueryResult> queryResults = response.getQueryResults();
-        if (queryResults != null && !queryResults.isEmpty()) {
-            for (QueryResp.QueryResult result : queryResults) {
-                Map<String, Object> entity = result.getEntity();
-                String id = (String) entity.get("doc_id");
-                String content = (String) entity.get("content");
-
-                Map<String, Object> metadata = new HashMap<>();
-                Object metaObj = entity.get("metadata");
-                if (metaObj instanceof JsonObject) {
-                    JsonObject jsonMeta = (JsonObject) metaObj;
-                    metadata = gson.fromJson(jsonMeta, Map.class);
-                } else if (metaObj instanceof Map) {
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> castMeta = (Map<String, Object>) metaObj;
-                    metadata = castMeta;
-                }
-
-                Document doc = Document.builder()
-                        .id(id)
-                        .text(content)
-                        .metadata(metadata)
-                        .build();
-                results.add(doc);
-            }
-        }
-        return results;
-    }
-
-    /**
-     * Warmup the connection and caches.
-     */
-    public void warmup() {
-        try {
-            log.info("Warming up hybrid search...");
-            hybridSearch("warmup query", null, 1);
-            log.info("Hybrid search warmup completed.");
-        } catch (Exception e) {
-            log.warn("Hybrid search warmup failed (non-critical)", e);
-        }
+        return String.format("JSON_CONTAINS(metadata[\"tags\"], \"%s\")", filterTags.get(0));
     }
 }

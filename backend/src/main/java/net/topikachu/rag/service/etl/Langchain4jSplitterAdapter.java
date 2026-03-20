@@ -2,6 +2,7 @@ package net.topikachu.rag.service.etl;
 
 import dev.langchain4j.data.document.splitter.DocumentSplitters;
 import dev.langchain4j.data.segment.TextSegment;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.transformer.splitter.TextSplitter;
 
@@ -10,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+@Slf4j
 public class Langchain4jSplitterAdapter extends TextSplitter {
 
     private final dev.langchain4j.data.document.DocumentSplitter internalSplitter;
@@ -21,9 +23,16 @@ public class Langchain4jSplitterAdapter extends TextSplitter {
 
     @Override
     protected List<String> splitText(String text) {
-        dev.langchain4j.data.document.Document lcDoc = dev.langchain4j.data.document.Document.from(text);
+        TextSanitizer.SanitizationResult result = TextSanitizer.sanitize(text);
+        if (result.isEffectivelyEmpty()) {
+            return List.of();
+        }
+        dev.langchain4j.data.document.Document lcDoc = dev.langchain4j.data.document.Document.from(result.text());
         return internalSplitter.split(lcDoc).stream()
                 .map(TextSegment::text)
+                .map(TextSanitizer::sanitize)
+                .filter(resultItem -> !resultItem.isEffectivelyEmpty())
+                .map(TextSanitizer.SanitizationResult::text)
                 .collect(Collectors.toList());
     }
 
@@ -45,10 +54,25 @@ public class Langchain4jSplitterAdapter extends TextSplitter {
                     List<TextSegment> segments = internalSplitter.split(lcDoc);
 
                     // 3. 结果转换与扁平化 (修复 Java 编译流类型报错)
-                    return segments.stream().map(segment -> {
-                        Map<String, Object> springMetadata = new HashMap<>(springDoc.getMetadata());
-                        return new Document(segment.text(), springMetadata);
-                    });
+                    return segments.stream()
+                            .map(segment -> TextSanitizer.sanitize(segment.text()))
+                            .filter(result -> !result.isEffectivelyEmpty())
+                            .peek(result -> {
+                                if (result.isLowQualityExtraction()) {
+                                    Object pageNumber = springDoc.getMetadata().get("page_number");
+                                    log.warn(
+                                            "Low-quality chunk after split: page={}, removedRatio={}, meaningfulCodePoints={}, sanitizedLength={}, preview={}",
+                                            pageNumber != null ? pageNumber : "unknown",
+                                            result.removedRatioPercent(),
+                                            result.meaningfulCodePoints(),
+                                            result.text().length(),
+                                            TextSanitizer.preview(result.text()));
+                                }
+                            })
+                            .map(result -> {
+                                Map<String, Object> springMetadata = new HashMap<>(springDoc.getMetadata());
+                                return new Document(result.text(), springMetadata);
+                            });
                 })
                 .collect(Collectors.toList()); // 最终聚合成一维 List<Document>要求的签名
     }

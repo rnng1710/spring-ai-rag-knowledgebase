@@ -47,10 +47,30 @@ public class TeiEmbeddingClient {
      * Call the unified /embed endpoint and get both dense and sparse vectors.
      */
     public Mono<BgeM3Response> embed(String text) {
+        TextSanitizer.SanitizationResult result = TextSanitizer.sanitize(text);
+        if (result.wasModified()) {
+            log.info(
+                    "Sanitized embedding input: removedChars={}, normalizedWhitespace={}, originalLength={}, sanitizedLength={}, preview={}",
+                    result.removedChars(),
+                    result.normalizedWhitespace(),
+                    result.originalLength(),
+                    result.text().length(),
+                    TextSanitizer.preview(result.text()));
+        }
+        if (result.isEffectivelyEmpty()) {
+            log.warn("Rejecting embedding input after sanitization: preview={}", TextSanitizer.preview(text));
+            return Mono.error(new IllegalArgumentException("Embedding input is empty after sanitization"));
+        }
+        if (TextSanitizer.containsIllegalCodePoints(result.text())) {
+            log.warn("Rejecting embedding input that still contains illegal Unicode after sanitization: preview={}",
+                    TextSanitizer.preview(result.text()));
+            return Mono.error(new IllegalArgumentException("Embedding input still contains illegal Unicode code points"));
+        }
+
         return webClient.post()
                 .uri("/embed")
                 .contentType(MediaType.APPLICATION_JSON)
-                .bodyValue(new EmbedRequest(text))
+                .bodyValue(new EmbedRequest(result.text()))
                 .retrieve()
                 .bodyToMono(BgeM3Response.class)
                 .timeout(timeout)

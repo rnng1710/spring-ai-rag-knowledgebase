@@ -5,12 +5,12 @@ import lombok.extern.slf4j.Slf4j;
 import net.topikachu.rag.business.document.entity.DocumentStatus;
 import net.topikachu.rag.business.document.mapper.DocumentMapper;
 import org.springframework.ai.document.Document;
+import org.springframework.ai.reader.ExtractedTextFormatter;
+import org.springframework.ai.reader.pdf.PagePdfDocumentReader;
+import org.springframework.ai.reader.pdf.config.PdfDocumentReaderConfig;
 import org.springframework.ai.reader.tika.TikaDocumentReader;
 import org.springframework.ai.transformer.splitter.TextSplitter;
 import org.springframework.stereotype.Component;
-import org.springframework.ai.reader.pdf.PagePdfDocumentReader;
-import org.springframework.ai.reader.pdf.config.PdfDocumentReaderConfig;
-import org.springframework.ai.reader.ExtractedTextFormatter;
 import org.springframework.ai.document.DocumentReader;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -62,24 +62,22 @@ public class EtlPipeline {
 		// upload flow for now.
 		// For simplification, I'm focusing on ingestionByPath which is used by upload.
 		return documentReader.scanDirectory()
-				.flatMap(path -> {
-					return Mono.fromCallable(() -> {
-						String hash = computeHash(path);
-						Long count = documentMapper.selectCount(
-								Wrappers.<net.topikachu.rag.business.document.entity.Document>lambdaQuery()
-										.eq(net.topikachu.rag.business.document.entity.Document::getFileHash, hash));
-						if (count > 0)
-							return null;
-						return hash;
-					}).subscribeOn(Schedulers.boundedElastic())
-							.flatMapMany(hash -> {
-								if (hash == null)
-									return Mono.empty();
-								// Simplified adaptation for batch flux if needed, but primary focus is
-								// ingestionByPath
-								return Mono.empty();
-							});
-				});
+				.flatMap(path -> Mono.fromCallable(() -> {
+                    String hash = computeHash(path);
+                    Long count = documentMapper.selectCount(
+                            Wrappers.<net.topikachu.rag.business.document.entity.Document>lambdaQuery()
+                                    .eq(net.topikachu.rag.business.document.entity.Document::getFileHash, hash));
+                    if (count > 0)
+                        return null;
+                    return hash;
+                }).subscribeOn(Schedulers.boundedElastic())
+                        .flatMapMany(hash -> {
+                            if (hash == null)
+                                return Mono.empty();
+                            // Simplified adaptation for batch flux if needed, but primary focus is
+                            // ingestionByPath
+                            return Mono.empty();
+                        }));
 	}
 
 	// TODO::重构解析不同文件格式的策略，（考虑使用Python来处理数据的清洗和切分）
@@ -117,7 +115,7 @@ public class EtlPipeline {
 								String pageNumStr = pageNumObj != null ? pageNumObj.toString()
 										: String.valueOf(pageCounter);
 
-								// ⭐ 注入给大模型阅读的物理页眉锚点
+								// 注入给大模型阅读的物理页眉锚点
 								String anchoredText = "[--- 以下为文件第 " + pageNumStr + " 页内容 ---]\n" + pageDoc.getText();
 
 								// 构造带有锚点且继承了原始 Metadata 的独立页 Document
@@ -129,6 +127,12 @@ public class EtlPipeline {
 							docs = pageDocs;
 						}
 						// ===================================================================
+
+						boolean isPdf = fileName.endsWith(".pdf");
+						docs = sanitizeDocuments(path, docs, isPdf);
+						if (docs.isEmpty()) {
+							throw new IllegalStateException("No usable text extracted after sanitization: " + path);
+						}
 
 						// 2. 注入 Metadata (Tags, UUID, FileName)
 						for (Document doc : docs) {
@@ -164,16 +168,82 @@ public class EtlPipeline {
 				.timeout(java.time.Duration.ofSeconds(vectorizeTimeoutSeconds))
 				.then(completeStatus(docUuid, userId))
 				.doOnSuccess(v -> log.info("IngestionByPath finished: {}", path))
-				.doOnError(e -> {
-					// TODO:: 没有测试过双库数据一致性策略是否有效（未加入看门口机制，定时扫描失败文件）
+//				.doOnError(e -> {
+//					log.error("Error during ingestionByPath: {}", path, e);
+//					// 1. Cleanup Milvus vectors to prevent orphan data
+//					hybridVectorWriter.deleteByDocUuid(docUuid)
+//							.doOnError(ex -> log.warn("Cleanup failed for {}", docUuid, ex))
+//							.subscribe();
+//					// 2. Update DB with detailed error info
+//					updateFailedStatus(docUuid, userId, e).subscribe();
+//				})
+				.onErrorResume(e -> {
 					log.error("Error during ingestionByPath: {}", path, e);
+
 					// 1. Cleanup Milvus vectors to prevent orphan data
-					hybridVectorWriter.deleteByDocUuid(docUuid)
-							.doOnError(ex -> log.warn("Cleanup failed for {}", docUuid, ex))
-							.subscribe();
 					// 2. Update DB with detailed error info
-					updateFailedStatus(docUuid, userId, e).subscribe();
+					// 使用 thenCombine 或 zip 等将多个异步任务合并，最后再抛出原始错误
+					return hybridVectorWriter.deleteByDocUuid(docUuid)
+							.onErrorResume(ex -> {
+								log.warn("Cleanup failed for {}", docUuid, ex);
+								return Mono.empty();
+							})
+							.then(updateFailedStatus(docUuid, userId, e))
+							.then(Mono.error(e));
 				});
+	}
+
+	private List<Document> sanitizeDocuments(Path path, List<Document> docs, boolean isPdf) {
+		java.util.List<Document> sanitizedDocs = new java.util.ArrayList<>();
+		int droppedCount = 0;
+
+		for (Document doc : docs) {
+			TextSanitizer.SanitizationResult result = TextSanitizer.sanitize(doc.getText());
+			Object pageNumber = doc.getMetadata().get("page_number");
+			String sourceLabel = isPdf && pageNumber != null
+					? "page " + pageNumber
+					: "document chunk";
+
+			if (result.wasModified()) {
+				log.info(
+						"Sanitized {} from {}: removedChars={}, normalizedWhitespace={}, originalLength={}, sanitizedLength={}, preview={}",
+						sourceLabel,
+						path.getFileName(),
+						result.removedChars(),
+						result.normalizedWhitespace(),
+						result.originalLength(),
+						result.text().length(),
+						TextSanitizer.preview(result.text()));
+			}
+
+			if (result.isLowQualityExtraction()) {
+				log.warn(
+						"Low-quality {} extraction for {}: removedRatio={}, meaningfulCodePoints={}, sanitizedLength={}, preview={}",
+						sourceLabel,
+						path.getFileName(),
+						result.removedRatioPercent(),
+						result.meaningfulCodePoints(),
+						result.text().length(),
+						TextSanitizer.preview(result.text()));
+			}
+
+			if (result.isEffectivelyEmpty()) {
+				droppedCount++;
+				log.warn("Dropping {} from {} after sanitization: preview={}",
+						sourceLabel,
+						path.getFileName(),
+						TextSanitizer.preview(doc.getText()));
+				continue;
+			}
+
+			sanitizedDocs.add(new Document(result.text(), new java.util.HashMap<>(doc.getMetadata())));
+		}
+
+		if (droppedCount > 0) {
+			log.info("Dropped {} sanitized document(s) for {}", droppedCount, path.getFileName());
+		}
+
+		return sanitizedDocs;
 	}
 
 	// Helper to publish status to DB and Redis non-blocking

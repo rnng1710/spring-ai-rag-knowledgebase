@@ -12,6 +12,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.core.io.Resource;
 import org.springframework.test.context.ActiveProfiles;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -22,18 +25,20 @@ import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Exports RAG evaluation data as JSONL for Ragas (Python) assessment.
+ * Exports staged RAG evaluation data as JSONL for Ragas (Python) assessment.
  * <p>
  * Flow:
  * 1. Reads test questions from a CSV file (question, ground_truth)
- * 2. Calls ChatService.evaluateQuery() for each question (Ollama generates
- * answers)
- * 3. Writes results as JSONL compatible with Ragas evaluate()
+ * 2. Runs three retrieval stages through ChatService.evaluateQuery()
+ * 3. Evaluates Ollama and DeepSeek concurrently with independent pipelines
+ * 4. Writes results as JSONL compatible with Ragas evaluate()
  * <p>
  * Usage:
  * mvn test -Dtest=RagasDataExporter
@@ -43,6 +48,8 @@ import java.util.Map;
 @ActiveProfiles({ "ollama-openai" })
 @Slf4j
 public class RagasDataExporter {
+
+    private static final String[] MODEL_IDS = { "ollama", "deepseek" };
 
     @Autowired
     private ChatService chatService;
@@ -65,12 +72,6 @@ public class RagasDataExporter {
     @Value("${rag.ragas.top-k:5}")
     private int topK;
 
-    @Value("${rag.ragas.use-sparse-search:true}")
-    private boolean useSparseSearch;
-
-    @Value("${rag.ragas.use-rerank:true}")
-    private boolean useRerank;
-
     @Value("${rag.ragas.timeout-seconds:60}")
     private int timeoutSeconds;
 
@@ -83,121 +84,145 @@ public class RagasDataExporter {
         }
         log.info("Loaded {} test questions from {}", pairs.size(), testQuestionsFile);
 
-        String[] modelIds = { "ollama", "deepseek", "gemini" };
-        
-        // 1. Initialize output files and clear previous content
-        for (String modelId : modelIds) {
+        List<EvaluationStage> stages = evaluationStages();
+        for (String modelId : MODEL_IDS) {
             Path output = Paths.get(outputFilePrefix + modelId + ".jsonl");
             Files.createDirectories(output.getParent());
             Files.writeString(output, "", StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
         }
 
-        EvaluationConfig config = new EvaluationConfig(useSparseSearch, useRerank, false);
-        
-        // Atomic counters for thread safety
-        java.util.concurrent.atomic.AtomicInteger[] successCounts = new java.util.concurrent.atomic.AtomicInteger[modelIds.length];
-        java.util.concurrent.atomic.AtomicInteger[] failureCounts = new java.util.concurrent.atomic.AtomicInteger[modelIds.length];
-        for(int i=0; i<modelIds.length; i++) {
-            successCounts[i] = new java.util.concurrent.atomic.AtomicInteger(0);
-            failureCounts[i] = new java.util.concurrent.atomic.AtomicInteger(0);
+        Map<String, AtomicInteger> successCounts = new LinkedHashMap<>();
+        Map<String, AtomicInteger> failureCounts = new LinkedHashMap<>();
+        for (String modelId : MODEL_IDS) {
+            successCounts.put(modelId, new AtomicInteger());
+            failureCounts.put(modelId, new AtomicInteger());
         }
 
-        log.info("=== Starting fully asychronous concurrent evaluation export for models: {} ===", String.join(", ", modelIds));
+        log.info("=== Starting staged asynchronous evaluation export for models: {} ===",
+                String.join(", ", MODEL_IDS));
 
-        // 2 & 3. Create a fully asynchronous reactive pipeline
-        reactor.core.publisher.Flux.fromIterable(pairs)
-            .index() // keep track of the question index
-            .flatMap(tuple -> {
-                long questionIndex = tuple.getT1() + 1; // 1-based index
-                QAPair qa = tuple.getT2();
-                log.info("[_All_] [{}/{}] Processing asynchronously: {}...", questionIndex, pairs.size(),
-                        qa.question.length() > 40 ? qa.question.substring(0, 40) : qa.question);
-
-                // For each question, concurrently ask all models
-                return reactor.core.publisher.Flux.fromArray(modelIds)
-                    .flatMap(modelId -> {
-                        int modelIndex = getModelIndex(modelIds, modelId);
-                        
-                        reactor.core.publisher.Mono<EvaluationResultItem> queryMono = chatService.evaluateQuery(
-                                qa.question,
-                                qa.groundTruth,
-                                config,
-                                baselinePrompt,
-                                optimizedPrompt,
-                                topK,
-                                modelId);
-                                
-                        // Rate limit Gemini to 20 RPM (1 request every 3 seconds minimum)
-                        if ("gemini".equals(modelId)) {
-                            // Delay based on questionIndex to stagger the requests (3s intervals)
-                            long delayMs = (questionIndex - 1) * 3000L;
-                            queryMono = queryMono.delaySubscription(Duration.ofMillis(delayMs));
-                            log.info("[gemini] Question {} scheduled with a delay of {} ms", questionIndex, delayMs);
-                        }
-
-                        return queryMono
-                                .doOnNext(result -> {
-                                    // 4. Wait for NO other model. Formulate result and write immediately.
-                                    if (result == null) {
-                                        failureCounts[modelIndex].incrementAndGet();
-                                        log.warn("[{}] [{}/{}] evaluateQuery returned null.", modelId, questionIndex, pairs.size());
-                                        return;
-                                    }
-                                    try {
-                                        Map<String, Object> ragasRecord = toRagasFormat(result);
-                                        String jsonLine = objectMapper.writeValueAsString(ragasRecord);
-                                        
-                                        // Synchronize exclusively on the specific model's file path to avoid overlapping writes
-                                        Path output = Paths.get(outputFilePrefix + modelId + ".jsonl");
-                                        synchronized(modelId.intern()) {
-                                            Files.writeString(output, jsonLine + System.lineSeparator(),
-                                                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-                                        }
-                                        
-                                        successCounts[modelIndex].incrementAndGet();
-                                        log.info("[{}] [{}/{}] OK. answer_length={}, contexts_count={}",
-                                                modelId, questionIndex, pairs.size(),
-                                                result.generatedAnswer().length(),
-                                                result.contexts().size());
-                                    } catch (Exception e) {
-                                        log.error("[{}] [{}/{}] Failed to write result: {}", modelId, questionIndex, pairs.size(), e.getMessage());
-                                        failureCounts[modelIndex].incrementAndGet();
-                                    }
-                                })
-                                .onErrorResume(e -> {
-                                    log.error("[{}] [{}/{}] Failed during concurrent execution: {}", modelId, questionIndex, pairs.size(), e.getMessage());
-                                    failureCounts[modelIndex].incrementAndGet();
-                                    return reactor.core.publisher.Mono.empty(); // Ignore errors explicitly from stream to not break the flatMap
-                                });
-                    });
-            }, 3) // Optional: limit overall concurrency (number of questions concurrently processed) so you don't exhaust API limits instantly
-            .blockLast(Duration.ofSeconds(timeoutSeconds * pairs.size())); // Max overall execution time
+        Flux.fromIterable(stages)
+                .concatMap(stage -> runStage(stage, pairs, successCounts, failureCounts))
+                .then()
+                .block(calculateOverallTimeout(pairs.size(), stages.size()));
 
         log.info("=== Ragas data export complete ===");
-        for (int i = 0; i < modelIds.length; i++) {
-            log.info("Model [{}]: Success: {}, Failed: {}, Total: {}", 
-                modelIds[i], successCounts[i].get(), failureCounts[i].get(), pairs.size());
+        for (String modelId : MODEL_IDS) {
+            log.info("Model [{}]: Success: {}, Failed: {}, Total Attempts: {}",
+                    modelId,
+                    successCounts.get(modelId).get(),
+                    failureCounts.get(modelId).get(),
+                    pairs.size() * stages.size());
         }
     }
 
-    private int getModelIndex(String[] models, String target) {
-        for (int i = 0; i < models.length; i++) {
-            if (models[i].equals(target)) return i;
-        }
-        return 0;
+    private Mono<Void> runStage(
+            EvaluationStage stage,
+            List<QAPair> pairs,
+            Map<String, AtomicInteger> successCounts,
+            Map<String, AtomicInteger> failureCounts) {
+        log.info("=== Stage [{}] started. sparse={}, rerank={} ===",
+                stage.variant(), stage.config().useSparseSearch(), stage.config().useRerank());
+
+        return Flux.fromArray(MODEL_IDS)
+                .flatMap(modelId -> runModelPipeline(
+                        modelId,
+                        stage,
+                        pairs,
+                        successCounts.get(modelId),
+                        failureCounts.get(modelId)))
+                .then()
+                .doOnSuccess(ignored -> log.info("=== Stage [{}] completed ===", stage.variant()));
     }
-    
-    private record ModelResult(String modelId, EvaluationResultItem result) {}
+
+    private Mono<Void> runModelPipeline(
+            String modelId,
+            EvaluationStage stage,
+            List<QAPair> pairs,
+            AtomicInteger successCount,
+            AtomicInteger failureCount) {
+        Path output = Paths.get(outputFilePrefix + modelId + ".jsonl");
+
+        log.info("[{}][{}] Pipeline started with {} questions", modelId, stage.variant(), pairs.size());
+        return Flux.fromIterable(pairs)
+                .index()
+                .concatMap(tuple -> exportSingleQuestion(
+                        modelId,
+                        stage,
+                        tuple.getT1() + 1,
+                        pairs.size(),
+                        tuple.getT2(),
+                        output,
+                        successCount,
+                        failureCount))
+                .then()
+                .doOnSuccess(ignored -> log.info("[{}][{}] Pipeline completed", modelId, stage.variant()));
+    }
+
+    private Mono<Void> exportSingleQuestion(
+            String modelId,
+            EvaluationStage stage,
+            long questionIndex,
+            int totalQuestions,
+            QAPair qa,
+            Path output,
+            AtomicInteger successCount,
+            AtomicInteger failureCount) {
+        log.info("[{}][{}][{}/{}] Processing: {}",
+                modelId,
+                stage.variant(),
+                questionIndex,
+                totalQuestions,
+                qa.question.length() > 40 ? qa.question.substring(0, 40) : qa.question);
+
+        return chatService.evaluateQuery(
+                        qa.question,
+                        qa.groundTruth,
+                        stage.config(),
+                        baselinePrompt,
+                        optimizedPrompt,
+                        topK,
+                        modelId,
+                        false)
+                .flatMap(result -> persistResult(output, toRagasFormat(stage.variant(), modelId, questionIndex, result))
+                        .doOnSuccess(ignored -> {
+                            successCount.incrementAndGet();
+                            log.info("[{}][{}][{}/{}] OK. answer_length={}, contexts_count={}",
+                                    modelId,
+                                    stage.variant(),
+                                    questionIndex,
+                                    totalQuestions,
+                                    result.generatedAnswer().length(),
+                                    result.contexts().size());
+                        }))
+                .onErrorResume(e -> {
+                    failureCount.incrementAndGet();
+                    log.error("[{}][{}][{}/{}] Failed: {}",
+                            modelId,
+                            stage.variant(),
+                            questionIndex,
+                            totalQuestions,
+                            e.getMessage(),
+                            e);
+                    return Mono.empty();
+                });
+    }
 
     /**
      * Convert EvaluationResultItem to Ragas-compatible JSON format.
      */
-    private Map<String, Object> toRagasFormat(EvaluationResultItem result) {
+    private Map<String, Object> toRagasFormat(
+            String variant,
+            String modelId,
+            long questionIndex,
+            EvaluationResultItem result) {
         Map<String, Object> record = new LinkedHashMap<>();
+        record.put("variant", variant);
+        record.put("model_id", modelId);
+        record.put("question_index", questionIndex);
         record.put("question", result.question());
         record.put("answer", result.generatedAnswer());
 
-        // Extract context texts as a list of strings
         List<String> contextTexts = new ArrayList<>();
         if (result.contexts() != null) {
             for (ContextNode ctx : result.contexts()) {
@@ -207,6 +232,33 @@ public class RagasDataExporter {
         record.put("contexts", contextTexts);
         record.put("ground_truth", result.groundTruth() != null ? result.groundTruth() : "");
         return record;
+    }
+
+    private Mono<Void> persistResult(Path output, Map<String, Object> ragasRecord) {
+        return Mono.fromCallable(() -> objectMapper.writeValueAsString(ragasRecord))
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMap(jsonLine -> Mono.fromRunnable(() -> {
+                            try {
+                                Files.writeString(output, jsonLine + System.lineSeparator(),
+                                        StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+                            } catch (IOException e) {
+                                throw new RuntimeException("Failed to append JSONL record", e);
+                            }
+                        })
+                        .subscribeOn(Schedulers.boundedElastic()))
+                .then();
+    }
+
+    private List<EvaluationStage> evaluationStages() {
+        return Arrays.asList(
+                new EvaluationStage("dense_only", new EvaluationConfig(false, false, false)),
+                new EvaluationStage("hybrid_no_rerank", new EvaluationConfig(true, false, false)),
+                new EvaluationStage("hybrid_with_rerank", new EvaluationConfig(true, true, false)));
+    }
+
+    private Duration calculateOverallTimeout(int questionCount, int stageCount) {
+        long multiplier = (long) Math.max(questionCount, 1) * Math.max(stageCount, 1) * MODEL_IDS.length;
+        return Duration.ofSeconds((long) timeoutSeconds * multiplier);
     }
 
     /**
@@ -229,11 +281,9 @@ public class RagasDataExporter {
                 if (trimmed.isEmpty()) {
                     continue;
                 }
-                // Remove BOM if present
                 if (trimmed.startsWith("\uFEFF")) {
                     trimmed = trimmed.substring(1);
                 }
-                // Skip header row
                 if (!headerSkipped) {
                     if (trimmed.toLowerCase().startsWith("question")) {
                         headerSkipped = true;
@@ -242,10 +292,8 @@ public class RagasDataExporter {
                     headerSkipped = true;
                 }
 
-                // Parse CSV (simple split by first comma)
                 int commaIdx = trimmed.indexOf(',');
                 if (commaIdx <= 0) {
-                    // No comma — treat entire line as question, no ground truth
                     pairs.add(new QAPair(trimmed, ""));
                     continue;
                 }
@@ -253,7 +301,6 @@ public class RagasDataExporter {
                 String question = trimmed.substring(0, commaIdx).trim();
                 String groundTruth = trimmed.substring(commaIdx + 1).trim();
 
-                // Remove surrounding quotes if present
                 question = stripQuotes(question);
                 groundTruth = stripQuotes(groundTruth);
 
@@ -273,5 +320,8 @@ public class RagasDataExporter {
     }
 
     private record QAPair(String question, String groundTruth) {
+    }
+
+    private record EvaluationStage(String variant, EvaluationConfig config) {
     }
 }

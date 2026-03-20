@@ -8,7 +8,6 @@ import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
 
 import java.util.Collections;
 import java.util.List;
@@ -38,8 +37,7 @@ public class AgentTools {
     public Mono<List<Document>> retrieve(String query, List<String> tags, Integer topK) {
         int effectiveTopK = (topK == null || topK <= 0) ? rerankTopK : topK;
 
-        return Mono.fromCallable(() -> hybridSearchService.hybridSearch(query, tags, hybridTopK))
-                .subscribeOn(Schedulers.boundedElastic())
+        return hybridSearchService.hybridSearch(query, tags, hybridTopK)
                 .flatMap(candidates -> {
                     if (candidates == null || candidates.isEmpty()) {
                         return Mono.just(Collections.emptyList());
@@ -53,12 +51,10 @@ public class AgentTools {
     }
 
     public Mono<Document> getDocById(String docId) {
-        return Mono.fromCallable(() -> hybridSearchService.getByDocId(docId))
-                .subscribeOn(Schedulers.boundedElastic());
+        return hybridSearchService.getByDocId(docId);
     }
 
     public Mono<List<String>> listTags() {
-        return Mono.fromCallable(documentService::getAllTags)
-                .subscribeOn(Schedulers.boundedElastic());
+        return documentService.getAllTags();
     }
 }

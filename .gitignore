@@ -44,3 +44,9 @@ backend/src/main/resources/application.properties
 
 # Generated outputs
 output/
+load-tests/results/
+load-tests/
+evaluation/
+rerank/
+rerank-service/
+diff.txt

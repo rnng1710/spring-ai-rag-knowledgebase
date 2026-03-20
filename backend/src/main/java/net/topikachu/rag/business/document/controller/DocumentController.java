@@ -1,21 +1,25 @@
 package net.topikachu.rag.business.document.controller;
 
-import lombok.extern.slf4j.Slf4j;
-import net.topikachu.rag.business.document.vo.UploadResult;
-import net.topikachu.rag.common.AjaxResult;
-import net.topikachu.rag.business.document.service.DocumentService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import net.topikachu.rag.business.document.service.DocumentService;
+import net.topikachu.rag.common.AjaxResult;
 import org.springframework.http.MediaType;
+import org.springframework.http.codec.multipart.FilePart;
 import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.web.bind.annotation.*;
-import org.springframework.web.multipart.MultipartFile;
-
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.core.toolkit.Wrappers;
-import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import net.topikachu.rag.business.document.entity.Document;
 import org.springframework.util.StringUtils;
-import java.io.IOException;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestPart;
+import org.springframework.web.bind.annotation.RestController;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
 import java.security.Principal;
 import java.util.List;
 
@@ -25,94 +29,85 @@ import java.util.List;
 @RequiredArgsConstructor
 public class DocumentController {
 
-        private final DocumentService documentService;
+    private final DocumentService documentService;
 
-        @PostMapping("/docs/upload")
-        @PreAuthorize("hasRole('ADMIN')")
-        public AjaxResult upLoad(
-                        @RequestPart("file") MultipartFile file,
-                        @RequestParam(value = "fileName", required = false) String fileName,
-                        @RequestParam(value = "overwrite", defaultValue = "false") boolean overwriet,
-                        @RequestParam(value = "tags", required = false) List<String> tags,
-                        Principal principal)
-                        throws IOException {
+    @PostMapping("/docs/upload")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<AjaxResult> upLoad(
+            @RequestPart("file") Mono<FilePart> file,
+            @RequestParam(value = "fileName", required = false) String fileName,
+            @RequestParam(value = "overwrite", defaultValue = "false") boolean overwrite,
+            @RequestParam(value = "tags", required = false) List<String> tags,
+            Mono<Principal> principalMono) {
+        return principalMono.map(Principal::getName)
+                .defaultIfEmpty("")
+                .flatMap(userId -> file.flatMap(part -> documentService.upload(
+                                part,
+                                fileName,
+                                overwrite,
+                                StringUtils.hasText(userId) ? userId : null,
+                                tags))
+                        .map(AjaxResult::success));
+    }
 
-                String userId = (principal != null) ? principal.getName() : null;
-                UploadResult result = documentService.upload(file, fileName, overwriet, userId, tags);
+    @PostMapping(path = "/upload/batch", consumes = MediaType.MULTIPART_FORM_DATA_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<AjaxResult> uploadBatch(
+            @RequestPart("files") Flux<FilePart> files,
+            @RequestParam(defaultValue = "false") boolean overwrite,
+            @RequestParam(value = "tags", required = false) List<String> tags,
+            Mono<Principal> principalMono) {
+        return principalMono.map(Principal::getName)
+                .defaultIfEmpty("")
+                .flatMap(userId -> {
+                    String effectiveUserId = StringUtils.hasText(userId) ? userId : null;
+                    log.info("Batch upload requested by user={}, overwrite={}, tags={}", effectiveUserId, overwrite, tags);
+                    return documentService.uploadBatch(files, overwrite, effectiveUserId, tags)
+                            .map(AjaxResult::success);
+                });
+    }
 
-                return AjaxResult.success(result);
-        }
+    @GetMapping("/docs")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<AjaxResult> list(
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "10") int size,
+            @RequestParam(required = false) String keyword) {
+        return documentService.listDocuments(page, size, keyword)
+                .map(AjaxResult::success);
+    }
 
-        /**
-         * Batch upload (idempotent): Repeated uploads return the existing
-         * docUuid/status/fileName and do not trigger ingestion
-         *
-         * form-data:
-         * - files: multifile
-         * - overwrite: true/false（default false）
-         */
-        @PostMapping(path = "/upload/batch", consumes = MediaType.MULTIPART_FORM_DATA_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
-        @PreAuthorize("hasRole('ADMIN')")
-        public AjaxResult uploadBatch(
-                        @RequestPart("files") List<MultipartFile> files,
-                        @RequestParam(defaultValue = "false") boolean overwrite,
-                        @RequestParam(value = "tags", required = false) List<String> tags,
-                        Principal principal) {
-                // Record the operator's actions for auditing (creating an audit report is very
-                // useful)
-                String userId = (principal != null) ? principal.getName() : null;
-                log.info("Batch upload requested by user={}, fileCount={}, overwrite={}, tags={}",
-                                userId,
-                                files == null ? 0 : files.size(),
-                                overwrite, tags);
+    @DeleteMapping("/docs/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<AjaxResult> remove(@PathVariable Long id) {
+        return documentService.removeDocumentById(id)
+                .thenReturn(AjaxResult.success());
+    }
 
-                return AjaxResult.success(documentService.uploadBatch(files, overwrite, userId, tags));
-        }
+    @DeleteMapping("/docs")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<AjaxResult> removeBatch(@RequestBody List<Long> ids) {
+        return documentService.removeDocumentsBatch(ids)
+                .thenReturn(AjaxResult.success());
+    }
 
-        @GetMapping("/docs")
-        @PreAuthorize("hasRole('ADMIN')")
-        public AjaxResult list(
-                        @RequestParam(defaultValue = "1") int page,
-                        @RequestParam(defaultValue = "10") int size,
-                        @RequestParam(required = false) String keyword) {
-                Page<Document> p = new Page<>(page, size);
-                LambdaQueryWrapper<Document> query = Wrappers.lambdaQuery();
-                if (StringUtils.hasText(keyword)) {
-                        query.like(Document::getFileName, keyword);
-                }
-                query.orderByDesc(Document::getCreateDate);
-                return AjaxResult.success(documentService.page(p, query));
-        }
+    @GetMapping("/tags")
+    @PreAuthorize("hasAnyRole('USER', 'ADMIN')")
+    public Mono<AjaxResult> getTags() {
+        return documentService.getAllTags()
+                .map(AjaxResult::success);
+    }
 
-        @DeleteMapping("/docs/{id}")
-        @PreAuthorize("hasRole('ADMIN')")
-        public AjaxResult remove(@PathVariable Long id) {
-                documentService.removeDocumentById(id);
-                return AjaxResult.success();
-        }
-
-        @DeleteMapping("/docs")
-        @PreAuthorize("hasRole('ADMIN')")
-        public AjaxResult removeBatch(@RequestBody List<Long> ids) {
-                documentService.removeDocumentsBatch(ids);
-                return AjaxResult.success();
-        }
-
-        @GetMapping("/tags")
-        @PreAuthorize("hasAnyRole('USER', 'ADMIN')")
-        public AjaxResult getTags() {
-                return AjaxResult.success(documentService.getAllTags());
-        }
-
-        /**
-         * Retry ingestion for a FAILED document
-         */
-        @PostMapping("/docs/{id}/retry")
-        @PreAuthorize("hasRole('ADMIN')")
-        public AjaxResult retry(@PathVariable Long id, Principal principal) {
-                String userId = (principal != null) ? principal.getName() : null;
-                log.info("Retry ingestion requested by user={}, docId={}", userId, id);
-                documentService.retryIngestion(id, userId);
-                return AjaxResult.success("Retry started");
-        }
+    @PostMapping("/docs/{id}/retry")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<AjaxResult> retry(@PathVariable Long id, Mono<Principal> principalMono) {
+        return principalMono.map(Principal::getName)
+                .defaultIfEmpty("")
+                .flatMap(userId -> {
+                    String effectiveUserId = StringUtils.hasText(userId) ? userId : null;
+                    log.info("Retry ingestion requested by user={}, docId={}", effectiveUserId, id);
+                    return documentService.retryIngestion(id, effectiveUserId)
+                            .thenReturn(AjaxResult.success("Retry started", null));
+                });
+    }
 }
