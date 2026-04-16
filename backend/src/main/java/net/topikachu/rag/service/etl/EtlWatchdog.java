@@ -24,12 +24,12 @@ public class EtlWatchdog {
     /**
      * Watchdog task to clean up stuck ETL processes.
      * Runs every 5 minutes.
-     * Checks for documents in intermediate states that haven't been updated for 10
+     * Checks for documents in intermediate states that haven't been updated for 15
      * minutes.
      */
     @Scheduled(cron = "0 0/5 * * * ?")
     public void cleanupStuckDocuments() {
-        log.info("看门狗扫描中...");
+        log.info("Dogwatch scan in progress...");
         LocalDateTime timeoutThreshold = LocalDateTime.now().minusMinutes(15);
 
         List<Document> stuckDocs = documentMapper.selectList(Wrappers.<Document>lambdaQuery()
@@ -51,7 +51,7 @@ public class EtlWatchdog {
                 // 1. Mark as FAILED in DB
                 int rows = documentMapper.update(null, Wrappers.<Document>lambdaUpdate()
                         .set(Document::getStatus, DocumentStatus.FAILED.name())
-                        .set(Document::getErrorMessage, "System Watchdog: Process timeout (10min). Please retry.")
+                        .set(Document::getErrorMessage, "System Watchdog: Process timeout (15min). Please retry.")
                         .set(Document::getUpdateDate, LocalDateTime.now())
                         .eq(Document::getDocUuid, doc.getDocUuid())
                         // CAS safety: only update if it's still in the stuck state we queried

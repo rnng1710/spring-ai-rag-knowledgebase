@@ -109,7 +109,7 @@
                          <span style="font-weight:600; font-size:14px; margin-top: 2px;">{{ msg.modelName || t("chat.assistant") }}</span>
                     </div>
 
-                    <div v-if="msg.content" class="message-content" style="white-space: pre-wrap;" v-html="renderMarkdown(msg.content)"></div>
+                    <div v-if="msg.content" class="message-content" style="white-space: pre-wrap;">{{ msg.content }}</div>
                       <div v-else class="message-content" style="color:#909399; font-style:italic">{{ t("chat.thinking") }}</div>
 
                     <div v-if="msg.mode === 'agent' && msg.agentTrace" class="agent-trace-block">
@@ -187,11 +187,6 @@ import { getAllTags } from "../api/docs";
 import { Plus, SwitchButton, Position, Close, Collection } from "@element-plus/icons-vue";
 import { clearAuthSession, getAccessToken, getUsernameFromAccessToken } from "../utils/auth";
 import { useI18n } from "vue-i18n";
-
-// Simple markdown render
-const renderMarkdown = (text: string) => {
-    return text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-}
 
 const router = useRouter();
 const { t } = useI18n();

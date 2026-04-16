@@ -79,14 +79,14 @@ public class DocumentController {
 
     @DeleteMapping("/docs/{id}")
     @PreAuthorize("hasRole('ADMIN')")
-    public Mono<AjaxResult> remove(@PathVariable Long id) {
+    public Mono<AjaxResult> remove(@PathVariable String id) {
         return documentService.removeDocumentById(id)
                 .thenReturn(AjaxResult.success());
     }
 
     @DeleteMapping("/docs")
     @PreAuthorize("hasRole('ADMIN')")
-    public Mono<AjaxResult> removeBatch(@RequestBody List<Long> ids) {
+    public Mono<AjaxResult> removeBatch(@RequestBody List<String> ids) {
         return documentService.removeDocumentsBatch(ids)
                 .thenReturn(AjaxResult.success());
     }
@@ -100,7 +100,7 @@ public class DocumentController {
 
     @PostMapping("/docs/{id}/retry")
     @PreAuthorize("hasRole('ADMIN')")
-    public Mono<AjaxResult> retry(@PathVariable Long id, Mono<Principal> principalMono) {
+    public Mono<AjaxResult> retry(@PathVariable String id, Mono<Principal> principalMono) {
         return principalMono.map(Principal::getName)
                 .defaultIfEmpty("")
                 .flatMap(userId -> {

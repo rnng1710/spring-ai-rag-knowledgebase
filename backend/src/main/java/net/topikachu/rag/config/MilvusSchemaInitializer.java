@@ -1,12 +1,13 @@
 package net.topikachu.rag.config;
 
-import io.milvus.v2.client.MilvusClientV2;
 import io.milvus.v2.client.ConnectConfig;
+import io.milvus.v2.client.MilvusClientV2;
 import io.milvus.v2.common.DataType;
 import io.milvus.v2.common.IndexParam;
 import io.milvus.v2.service.collection.request.*;
 import io.milvus.v2.service.collection.response.DescribeCollectionResp;
 import io.milvus.v2.service.index.request.CreateIndexReq;
+import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
@@ -22,6 +23,7 @@ import java.util.List;
  * Set spring.ai.vectorstore.milvus.initialize-schema=false to use this
  * initializer.
  */
+@Data
 @Component
 @Order(1) // Run early
 @Slf4j

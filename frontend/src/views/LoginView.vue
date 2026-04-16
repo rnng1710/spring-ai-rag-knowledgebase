@@ -38,8 +38,8 @@ import LanguageSwitcher from "../components/LanguageSwitcher.vue";
 
 const router = useRouter();
 const { t } = useI18n();
-const username = ref("user");
-const password = ref("password");
+const username = ref("");
+const password = ref("");
 const loading = ref(false);
 
 const login = async () => {

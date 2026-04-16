@@ -3,6 +3,7 @@ package net.topikachu.rag.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import net.topikachu.rag.common.BaseEntity;
@@ -26,6 +27,7 @@ public class SysUser extends BaseEntity {
     /**
      * Password (BCrypt Encrypted)
      */
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     private String password;
 
     /**

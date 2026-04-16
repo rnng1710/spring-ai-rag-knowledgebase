@@ -61,7 +61,8 @@ public class Langchain4jSplitterAdapter extends TextSplitter {
                                 if (result.isLowQualityExtraction()) {
                                     Object pageNumber = springDoc.getMetadata().get("page_number");
                                     log.warn(
-                                            "Low-quality chunk after split: page={}, removedRatio={}, meaningfulCodePoints={}, sanitizedLength={}, preview={}",
+                                            "Low-quality chunk after split: page={}, removedRatio={}, " +
+                                                    "meaningfulCodePoints={}, sanitizedLength={}, preview={}",
                                             pageNumber != null ? pageNumber : "unknown",
                                             result.removedRatioPercent(),
                                             result.meaningfulCodePoints(),

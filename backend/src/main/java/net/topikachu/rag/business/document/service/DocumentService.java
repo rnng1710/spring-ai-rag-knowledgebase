@@ -18,11 +18,11 @@ public interface DocumentService {
 
     Mono<Page<Document>> listDocuments(int page, int size, String keyword);
 
-    Mono<Void> removeDocumentById(Long id);
+    Mono<Void> removeDocumentById(String id);
 
-    Mono<Void> removeDocumentsBatch(List<Long> ids);
+    Mono<Void> removeDocumentsBatch(List<String> ids);
 
     Mono<List<String>> getAllTags();
 
-    Mono<Void> retryIngestion(Long id, String userId);
+    Mono<Void> retryIngestion(String id, String userId);
 }

@@ -18,20 +18,24 @@ public class ChatModelStrategyFactory {
     public ChatModelStrategyFactory(List<ChatModelStrategy> strategies) {
         this.strategyMap = strategies.stream()
                 .collect(Collectors.toMap(
-                        strategy -> strategy.getModelId().toLowerCase(),
+                        strategy -> strategy.getModelId()
+                                .toLowerCase(),
                         strategy -> strategy,
-                        (oldVal, newVal) -> newVal));
+                        (oldVal, newVal)
+                                -> newVal));
     }
 
     public ChatModelStrategy getStrategy(String modelId) {
         if (modelId == null || modelId.isBlank()) {
-            log.warn("modelId is null or blank, using default 'ollama' strategy");
+            log.warn("modelId is null or blank, using default 'ollama' " +
+                    "strategy");
             return strategyMap.get("ollama");
         }
 
         ChatModelStrategy strategy = strategyMap.get(modelId.toLowerCase());
         if (strategy == null) {
-            log.warn("Unknown modelId '{}', falling back to 'ollama' strategy", modelId);
+            log.warn("Unknown modelId '{}', falling back to 'ollama' strategy"
+                    , modelId);
             return strategyMap.get("ollama");
         }
 

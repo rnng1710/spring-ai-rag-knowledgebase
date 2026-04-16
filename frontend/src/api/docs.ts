@@ -1,7 +1,7 @@
 import { apiUrl, authFetch } from "./client";
 
 export interface Doc {
-    id: string; // Backend uses Long but JS handles generic IDs well.
+    id: string;
     docUuid: string;
     fileName: string;
     fileHash: string;
@@ -34,7 +34,7 @@ export const listDocs = async (page: number, size: number, keyword?: string) => 
     throw new Error(json.msg || "Fetch docs failed");
 };
 
-export const deleteDoc = async (id: string | number) => {
+export const deleteDoc = async (id: string) => {
     const res = await authFetch(apiUrl(`/api/v1/docs/${id}`), {
         method: "DELETE"
     });
@@ -42,7 +42,7 @@ export const deleteDoc = async (id: string | number) => {
     if (json.code !== 0) throw new Error(json.msg || "Delete failed");
 };
 
-export const deleteDocsBatch = async (ids: (string | number)[]) => {
+export const deleteDocsBatch = async (ids: string[]) => {
     const res = await authFetch(apiUrl(`/api/v1/docs`), {
         method: "DELETE",
         headers: {

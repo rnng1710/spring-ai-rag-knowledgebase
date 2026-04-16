@@ -140,7 +140,7 @@ public class DocumentServiceImpl implements DocumentService {
     }
 
     @Override
-    public Mono<Void> removeDocumentById(Long id) {
+    public Mono<Void> removeDocumentById(String id) {
         return Mono.fromRunnable(() -> {
                     Document doc = documentMapper.selectById(id);
                     if (doc == null) {
@@ -174,7 +174,7 @@ public class DocumentServiceImpl implements DocumentService {
     }
 
     @Override
-    public Mono<Void> removeDocumentsBatch(List<Long> ids) {
+    public Mono<Void> removeDocumentsBatch(List<String> ids) {
         if (ids == null || ids.isEmpty()) {
             return Mono.empty();
         }
@@ -206,7 +206,7 @@ public class DocumentServiceImpl implements DocumentService {
     }
 
     @Override
-    public Mono<Void> retryIngestion(Long id, String userId) {
+    public Mono<Void> retryIngestion(String id, String userId) {
         return Mono.fromRunnable(() -> {
                     Document doc = documentMapper.selectById(id);
                     if (doc == null) {

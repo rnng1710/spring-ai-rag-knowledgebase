@@ -189,10 +189,11 @@ public class ChatService {
                 })
                 .retryWhen(reactor.util.retry.Retry.backoff(3, java.time.Duration.ofSeconds(2))
                         .filter(throwable -> {
-                            // Can add specific sub-exceptions if needed, but for now retry on most runtime exceptions from APIs
-                            return throwable instanceof RuntimeException; 
+                            // Can add specific sub-exceptions if needed, but for now retry on most runtime
+                            // exceptions from APIs
+                            return throwable instanceof RuntimeException;
                         })
-                        .doBeforeRetry(retrySignal -> log.warn("[{}] API error '{}', retrying... ({}/{})", 
+                        .doBeforeRetry(retrySignal -> log.warn("[{}] API error '{}', retrying... ({}/{})",
                                 modelId, retrySignal.failure().getMessage(), retrySignal.totalRetriesInARow() + 1, 3)))
                 .onErrorResume(e -> {
                     log.error("[{}] API definitively failed after retries: {}", modelId, e.getMessage());
@@ -207,9 +208,9 @@ public class ChatService {
                     }
                     // Ultimate fallback if even Ollama fails or if the original request was already for Ollama
                     return Mono.just(new EvaluationResultItem(
-                            question, 
-                            groundTruth, 
-                            "【系统提示】所有模型调用均失败，请稍后再试或联系管理员。错误详情: " + e.getMessage(), 
+                            question,
+                            groundTruth,
+                            "【系统提示】所有模型调用均失败，请稍后再试或联系管理员。错误详情: " + e.getMessage(),
                             new ArrayList<>()));
                 }));
     }

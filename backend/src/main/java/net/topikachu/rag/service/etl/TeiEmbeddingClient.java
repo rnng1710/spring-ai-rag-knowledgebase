@@ -130,7 +130,6 @@ public class TeiEmbeddingClient {
      */
     private Long hashToken(String token) {
         byte[] bytes = token.getBytes(StandardCharsets.UTF_8);
-        // Use 32-bit hash and convert to unsigned long to avoid negative keys
         int hash32 = MurmurHash3.hash32x86(bytes, 0, bytes.length, 0);
         return Integer.toUnsignedLong(hash32);
     }
