@@ -2,6 +2,7 @@ package net.topikachu.rag.api;
 
 import lombok.extern.slf4j.Slf4j;
 import net.topikachu.rag.agent.AgentChatService;
+import net.topikachu.rag.observability.TracingSupport;
 import net.topikachu.rag.service.chat.ChatService;
 import net.topikachu.rag.service.etl.EtlPipeline;
 import lombok.RequiredArgsConstructor;
@@ -13,6 +14,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -31,6 +33,7 @@ public class RestApi {
 
 	private final ChatService chatService;
 	private final AgentChatService agentChatService;
+	private final TracingSupport tracingSupport;
 
 	private final EtlPipeline etlPipeline;
 
@@ -44,6 +47,9 @@ public class RestApi {
 	@PreAuthorize("hasAnyRole('USER', 'ADMIN')")
 	public Flux<ServerSentEvent<Object>> chat(@RequestBody ChatRequest chatRequest,
 			@RequestParam() String conversationId,
+			@RequestHeader(value = "X-Locust-Run-Id", required = false) String locustRunId,
+			@RequestHeader(value = "X-Question-Id", required = false) String questionId,
+			@RequestHeader(value = "X-Question-Bucket", required = false) String questionBucket,
 			Mono<Principal> principalMono) {
 		return principalMono.flatMapMany(principal -> {
 			var conversationKey = String.format("%s:%s", principal.getName(), conversationId);
@@ -55,6 +61,8 @@ public class RestApi {
 
 			boolean useAgent = agentEnabled && "agent".equalsIgnoreCase(mode);
 			String msgId = StringUtils.hasText(chatRequest.msgId()) ? chatRequest.msgId() : ("msg-" + System.currentTimeMillis());
+			tagCurrentChatTrace(principal.getName(), conversationId, conversationKey, mode, chatRequest.modelId(),
+					locustRunId, questionId, questionBucket);
 
 			if (!agentEnabled && "agent".equalsIgnoreCase(mode)) {
 				log.warn("Agent mode requested while disabled. conversationId={}, user={}", conversationId, principal.getName());
@@ -101,7 +109,12 @@ public class RestApi {
 										.data((Object) content)
 										.build());
 
-						return Flux.concat(Flux.just(sourceEvent), messageStream);
+						ServerSentEvent<Object> doneEvent = ServerSentEvent.builder()
+								.event("done")
+								.data((Object) Map.of("msgId", msgId))
+								.build();
+
+						return Flux.concat(Flux.just(sourceEvent), messageStream, Flux.just(doneEvent));
 					})
 					.onErrorResume(exp -> {
 						log.error("Error in chat", exp);
@@ -136,5 +149,25 @@ public class RestApi {
 	}
 
 	record ChatRequest(String userInput, List<String> tags, String modelId, String mode, String msgId) implements Serializable {
+	}
+
+	private void tagCurrentChatTrace(String username,
+			String conversationId,
+			String conversationKey,
+			String mode,
+			String modelId,
+			String locustRunId,
+			String questionId,
+			String questionBucket) {
+		Map<String, Object> tags = new LinkedHashMap<>();
+		tags.put("langfuse.user.id", username);
+		tags.put("langfuse.session.id", conversationKey);
+		tags.put("conversation.id", conversationId);
+		tags.put("chat.mode", mode);
+		tags.put("chat.model_id", modelId);
+		tags.put("locust.run_id", locustRunId);
+		tags.put("question.id", questionId);
+		tags.put("question.bucket", questionBucket);
+		tracingSupport.tagCurrent(tags);
 	}
 }

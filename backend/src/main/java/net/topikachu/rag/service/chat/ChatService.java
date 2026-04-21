@@ -4,6 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import net.topikachu.rag.evaluation.ContextNode;
 import net.topikachu.rag.evaluation.EvaluationConfig;
 import net.topikachu.rag.evaluation.EvaluationResultItem;
+import net.topikachu.rag.observability.TracingSupport;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategy;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategyFactory;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
@@ -34,6 +35,7 @@ public class ChatService {
     private final RerankService rerankService;
     private final ChatModelStrategyFactory strategyFactory;
     private final ReactiveChatGateway reactiveChatGateway;
+    private final TracingSupport tracingSupport;
     private final MessageChatMemoryAdvisor messageChatMemoryAdvisor;
 
     @Value("${rag.retrieval.hybrid-topk:20}")
@@ -48,12 +50,14 @@ public class ChatService {
     public ChatService(ChatMemory chatMemory,
             HybridSearchService hybridSearchService, RerankService rerankService,
             ChatModelStrategyFactory strategyFactory,
-            ReactiveChatGateway reactiveChatGateway) {
+            ReactiveChatGateway reactiveChatGateway,
+            TracingSupport tracingSupport) {
         this.chatMemory = chatMemory;
         this.hybridSearchService = hybridSearchService;
         this.rerankService = rerankService;
         this.strategyFactory = strategyFactory;
         this.reactiveChatGateway = reactiveChatGateway;
+        this.tracingSupport = tracingSupport;
 
         this.messageChatMemoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory).build();
     }
@@ -79,21 +83,39 @@ public class ChatService {
                 filterTags, modelId);
 
         long searchStart = System.currentTimeMillis();
-        return hybridSearchService.hybridSearch(userInput, filterTags, hybridTopK)
+        Map<String, Object> traceTags = Map.of(
+                "chat.mode", "rag",
+                "chat.model_id", modelId == null ? "" : modelId,
+                "chat.conversation_id", conversationId,
+                "rag.filter_tags", filterTags == null ? "" : String.join(",", filterTags));
+
+        return tracingSupport.traceMono("rag.hybrid_search", traceTags,
+                        hybridSearchService.hybridSearch(userInput, filterTags, hybridTopK))
                 .doOnNext(candidates -> log.debug("Hybrid search returned {} candidates in {}ms",
                         candidates.size(), System.currentTimeMillis() - searchStart))
                 .doOnError(error -> log.error("Retrieval stage failed for query='{}', conversationId={}",
                         userInput, conversationId, error))
                 .flatMap(candidates -> {
                     long rerankStart = System.currentTimeMillis();
-                    return rerankService.rerank(userInput, candidates, rerankTopK)
+                    return tracingSupport.traceMono("rag.rerank",
+                                    Map.of(
+                                            "chat.mode", "rag",
+                                            "chat.model_id", modelId == null ? "" : modelId,
+                                            "rag.candidate_count", candidates.size(),
+                                            "rag.rerank_topk", rerankTopK),
+                                    rerankService.rerank(userInput, candidates, rerankTopK))
                             .doOnNext(docs -> log.debug("Rerank returned {} docs in {}ms",
                                     docs.size(), System.currentTimeMillis() - rerankStart));
                 })
-                .map(docs -> {
+                .flatMap(docs -> tracingSupport.traceMono("rag.context_build",
+                                Map.of(
+                                        "chat.mode", "rag",
+                                        "chat.model_id", modelId == null ? "" : modelId,
+                                        "rag.source_count", docs.size(),
+                                        "rag.max_context_chars", maxContextChars),
+                                Mono.fromSupplier(() -> buildContext(docs)))
+                        .map(context -> {
                     // 3. Build Context with length limit to prevent LLM context overflow
-                    String context = buildContext(docs);
-
                     // 4. Resolve the strategy and stream response
                     ChatModelStrategy strategy = strategyFactory.getStrategy(modelId);
                     Flux<String> flux = reactiveChatGateway.stream(
@@ -105,7 +127,7 @@ public class ChatService {
                             messageChatMemoryAdvisor);
 
                     return new ChatStreamResponse(flux, docs);
-                });
+                }));
     }
 
     /**

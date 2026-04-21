@@ -1,0 +1,6 @@
+question_id,mode,bucket,tags,expected_answer_length,user_input
+rag-short-001,rag,short,,short,学生办理请假通常需要注意哪些要求？
+rag-short-002,rag,short,,short,如果宿舍管理规定中没有明确说明某个处罚，应该如何回答？
+rag-long-001,rag,long,,long,请根据知识库说明学生申请相关事项时通常需要关注哪些条件、材料和流程。
+agent-short-001,agent,short,,short,我想确认一个学生事务办理规则，你先检索再回答。
+agent-long-001,agent,long,,long,请综合检索相关制度，说明学生遇到规则不明确时应该如何判断并引用依据。

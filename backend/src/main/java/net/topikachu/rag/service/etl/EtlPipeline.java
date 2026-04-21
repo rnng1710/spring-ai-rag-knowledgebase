@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.extern.slf4j.Slf4j;
 import net.topikachu.rag.business.document.entity.DocumentStatus;
 import net.topikachu.rag.business.document.mapper.DocumentMapper;
+import net.topikachu.rag.observability.TracingSupport;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.reader.ExtractedTextFormatter;
 import org.springframework.ai.reader.pdf.PagePdfDocumentReader;
@@ -23,7 +24,9 @@ import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 @Component
 @Slf4j
@@ -36,6 +39,7 @@ public class EtlPipeline {
 	private final DocumentMapper documentMapper;
 	private final org.springframework.data.redis.core.StringRedisTemplate redisTemplate;
 	private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
+	private final TracingSupport tracingSupport;
 
 	@org.springframework.beans.factory.annotation.Value("${rag.etl.timeout.read-split-seconds:60}")
 	private long readSplitTimeoutSeconds;
@@ -48,13 +52,15 @@ public class EtlPipeline {
 			DocReader documentReader,
 			DocumentMapper documentMapper,
 			org.springframework.data.redis.core.StringRedisTemplate redisTemplate,
-			com.fasterxml.jackson.databind.ObjectMapper objectMapper) {
+			com.fasterxml.jackson.databind.ObjectMapper objectMapper,
+			TracingSupport tracingSupport) {
 		this.hybridVectorWriter = hybridVectorWriter;
 		this.textSplitter = textSplitter;
 		this.documentReader = documentReader;
 		this.documentMapper = documentMapper;
 		this.redisTemplate = redisTemplate;
 		this.objectMapper = objectMapper;
+		this.tracingSupport = tracingSupport;
 	}
 
 	public Flux<Document> ingestionFlux() {
@@ -83,9 +89,11 @@ public class EtlPipeline {
 	// TODO::重构解析不同文件格式的策略，（考虑使用Python来处理数据的清洗和切分）
 	// Compatible with legacy single path ingestion, now accepts docUuid and userId
 	public Mono<Void> ingestionByPath(Path path, String docUuid, String userId, List<String> tags) {
-		return Mono.defer(() -> {
+		Map<String, Object> traceTags = etlTraceTags(path, docUuid, userId, tags);
+		Mono<Void> pipeline = Mono.defer(() -> {
 			// 1. Reading
-			return publishStatus(docUuid, userId, DocumentStatus.READING, "Reading file...")
+			return tracingSupport.traceMono("etl.read", traceTags,
+					publishStatus(docUuid, userId, DocumentStatus.READING, "Reading file...")
 					.then(Mono.fromCallable(() -> {
 						DocumentReader reader;
 						String fileName = path.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
@@ -145,13 +153,14 @@ public class EtlPipeline {
 						}
 						return docs;
 					})
-							.subscribeOn(Schedulers.boundedElastic()));
+							.subscribeOn(Schedulers.boundedElastic())));
 		})
 				.flatMap(docs -> {
 					// 2. Splitting
-					return publishStatus(docUuid, userId, DocumentStatus.SPLITTING, "Splitting content...")
-							.then(Mono.fromCallable(() -> textSplitter.apply(docs))
-									.subscribeOn(Schedulers.boundedElastic()));
+					return tracingSupport.traceMono("etl.split", traceTags,
+							publishStatus(docUuid, userId, DocumentStatus.SPLITTING, "Splitting content...")
+									.then(Mono.fromCallable(() -> textSplitter.apply(docs))
+											.subscribeOn(Schedulers.boundedElastic())));
 				})
 				.timeout(java.time.Duration.ofSeconds(readSplitTimeoutSeconds))
 				.flatMap(splitDocs -> {
@@ -166,7 +175,7 @@ public class EtlPipeline {
 							}).subscribeOn(Schedulers.boundedElastic()));
 				})
 				.timeout(java.time.Duration.ofSeconds(vectorizeTimeoutSeconds))
-				.then(completeStatus(docUuid, userId))
+				.then(tracingSupport.traceMono("etl.finish", traceTags, completeStatus(docUuid, userId)))
 				.doOnSuccess(v -> log.info("IngestionByPath finished: {}", path))
 //				.doOnError(e -> {
 //					log.error("Error during ingestionByPath: {}", path, e);
@@ -191,6 +200,16 @@ public class EtlPipeline {
 							.then(updateFailedStatus(docUuid, userId, e))
 							.then(Mono.error(e));
 				});
+		return tracingSupport.traceMono("etl.ingestion", traceTags, pipeline);
+	}
+
+	private Map<String, Object> etlTraceTags(Path path, String docUuid, String userId, List<String> tags) {
+		Map<String, Object> traceTags = new LinkedHashMap<>();
+		traceTags.put("document.doc_uuid", docUuid);
+		traceTags.put("document.file_name", path == null ? "" : path.getFileName());
+		traceTags.put("document.user_id", userId);
+		traceTags.put("document.tags", tags == null ? "" : String.join(",", tags));
+		return traceTags;
 	}
 
 	private List<Document> sanitizeDocuments(Path path, List<Document> docs, boolean isPdf) {

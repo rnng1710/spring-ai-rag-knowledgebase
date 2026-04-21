@@ -1,5 +1,6 @@
 package net.topikachu.rag.agent;
 
+import net.topikachu.rag.observability.TracingSupport;
 import net.topikachu.rag.service.chat.ReactiveChatGateway;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategy;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategyFactory;
@@ -40,11 +41,17 @@ class AgentExecutorTest {
     @Mock
     private ChatClient chatClient;
 
+    @Mock
+    private TracingSupport tracingSupport;
+
     private AgentExecutor agentExecutor;
 
     @BeforeEach
     void setUp() {
-        agentExecutor = new AgentExecutor(agentTools, strategyFactory, reactiveChatGateway);
+        when(tracingSupport.traceMono(anyString(), anyMap(), any()))
+                .thenAnswer(invocation -> invocation.getArgument(2));
+
+        agentExecutor = new AgentExecutor(agentTools, strategyFactory, reactiveChatGateway, tracingSupport);
         ReflectionTestUtils.setField(agentExecutor, "timeoutMs", 1_000L);
 
         when(strategyFactory.getStrategy(anyString())).thenReturn(strategy);

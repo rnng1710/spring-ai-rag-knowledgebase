@@ -1,0 +1,3 @@
+# One absolute or repository-relative path per line.
+# Use different files for upload concurrency tests; duplicate file hashes short-circuit ETL.
+# D:\soft\java\javaFile\spring-ai-rag-knowledgebase\backend\data\input\sample.pdf

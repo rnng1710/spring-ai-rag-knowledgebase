@@ -1,5 +1,10 @@
 # Compiled class file
 *.class
+__pycache__/
+*.pyc*
+.pytest_cache/
+.venv/
+venv/
 
 # Log file
 *.log
@@ -42,10 +47,15 @@ backend/src/main/resources/application.properties
 *.iml
 .vscode/
 
+# Local env files
+.env
+.env.*
+!.env.langfuse.example
+!frontend/.env.example
+
 # Generated outputs
 output/
 load-tests/results/
-load-tests/
 evaluation/
 rerank/
 rerank-service/

@@ -2,6 +2,7 @@ package net.topikachu.rag.service.etl;
 
 import com.google.gson.JsonObject;
 import io.milvus.v2.service.vector.response.InsertResp;
+import net.topikachu.rag.observability.TracingSupport;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -20,6 +21,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -34,11 +37,17 @@ class HybridVectorWriterTest {
     @Mock
     private MilvusWriteGateway milvusWriteGateway;
 
+    @Mock
+    private TracingSupport tracingSupport;
+
     private HybridVectorWriter hybridVectorWriter;
 
     @BeforeEach
     void setUp() {
-        hybridVectorWriter = new HybridVectorWriter(teiEmbeddingClient, milvusWriteGateway);
+        when(tracingSupport.traceMono(anyString(), anyMap(), org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(invocation -> invocation.getArgument(2));
+
+        hybridVectorWriter = new HybridVectorWriter(teiEmbeddingClient, milvusWriteGateway, tracingSupport);
     }
 
     @Test

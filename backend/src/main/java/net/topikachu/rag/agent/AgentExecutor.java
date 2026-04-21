@@ -2,6 +2,7 @@ package net.topikachu.rag.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import net.topikachu.rag.observability.TracingSupport;
 import net.topikachu.rag.service.chat.ReactiveChatGateway;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategy;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategyFactory;
@@ -24,6 +25,7 @@ public class AgentExecutor {
     private final AgentTools tools;
     private final ChatModelStrategyFactory strategyFactory;
     private final ReactiveChatGateway reactiveChatGateway;
+    private final TracingSupport tracingSupport;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Value("${rag.agent.timeout-ms:12000}")
@@ -31,10 +33,12 @@ public class AgentExecutor {
 
     public AgentExecutor(AgentTools tools,
             ChatModelStrategyFactory strategyFactory,
-            ReactiveChatGateway reactiveChatGateway) {
+            ReactiveChatGateway reactiveChatGateway,
+            TracingSupport tracingSupport) {
         this.tools = tools;
         this.strategyFactory = strategyFactory;
         this.reactiveChatGateway = reactiveChatGateway;
+        this.tracingSupport = tracingSupport;
     }
 
     public Mono<AgentExecutionResult> execute(String userInput, List<String> tags, String modelId) {
@@ -44,7 +48,7 @@ public class AgentExecutor {
 
         addNote(notes, AgentStage.PLANNING, "decision", "正在规划检索与回答步骤。");
 
-        return decideNext(strategy, userInput, initialEvidence, tags)
+        Mono<AgentExecutionResult> pipeline = decideNext(strategy, userInput, initialEvidence, tags)
                 .defaultIfEmpty(new AgentDecision("retrieve", userInput, tags, null))
                 .flatMap(decision -> {
                     String action = normalizeAction(decision.action());
@@ -85,8 +89,16 @@ public class AgentExecutor {
                                                 effectiveTags,
                                                 notes,
                                                 evidence));
-                            });
+                        });
                 });
+
+        return tracingSupport.traceMono("agent.execute",
+                Map.of(
+                        "chat.mode", "agent",
+                        "chat.model_id", modelId == null ? "" : modelId,
+                        "agent.tags", tags == null ? "" : String.join(",", tags),
+                        "agent.input_chars", userInput == null ? 0 : userInput.length()),
+                pipeline);
     }
 
     private Mono<AgentExecutionResult> buildResultAfterEvidence(ChatModelStrategy strategy,

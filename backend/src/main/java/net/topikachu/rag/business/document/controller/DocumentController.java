@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import net.topikachu.rag.business.document.service.DocumentService;
 import net.topikachu.rag.common.AjaxResult;
+import net.topikachu.rag.observability.TracingSupport;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.multipart.FilePart;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -21,7 +22,9 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.security.Principal;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/v1")
@@ -30,6 +33,7 @@ import java.util.List;
 public class DocumentController {
 
     private final DocumentService documentService;
+    private final TracingSupport tracingSupport;
 
     @PostMapping("/docs/upload")
     @PreAuthorize("hasRole('ADMIN')")
@@ -38,6 +42,7 @@ public class DocumentController {
             @RequestParam(value = "fileName", required = false) String fileName,
             @RequestParam(value = "overwrite", defaultValue = "false") boolean overwrite,
             @RequestParam(value = "tags", required = false) List<String> tags,
+            @org.springframework.web.bind.annotation.RequestHeader(value = "X-Locust-Run-Id", required = false) String locustRunId,
             Mono<Principal> principalMono) {
         return principalMono.map(Principal::getName)
                 .defaultIfEmpty("")
@@ -47,6 +52,7 @@ public class DocumentController {
                                 overwrite,
                                 StringUtils.hasText(userId) ? userId : null,
                                 tags))
+                        .doOnSubscribe(subscription -> tagCurrentUploadTrace(userId, fileName, overwrite, tags, locustRunId))
                         .map(AjaxResult::success));
     }
 
@@ -109,5 +115,19 @@ public class DocumentController {
                     return documentService.retryIngestion(id, effectiveUserId)
                             .thenReturn(AjaxResult.success("Retry started", null));
                 });
+    }
+
+    private void tagCurrentUploadTrace(String userId,
+            String fileName,
+            boolean overwrite,
+            List<String> tags,
+            String locustRunId) {
+        Map<String, Object> traceTags = new LinkedHashMap<>();
+        traceTags.put("langfuse.user.id", userId);
+        traceTags.put("document.file_name", fileName);
+        traceTags.put("document.overwrite", overwrite);
+        traceTags.put("document.tags", tags == null ? "" : String.join(",", tags));
+        traceTags.put("locust.run_id", locustRunId);
+        tracingSupport.tagCurrent(traceTags);
     }
 }

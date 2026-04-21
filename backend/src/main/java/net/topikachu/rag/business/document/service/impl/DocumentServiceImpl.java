@@ -12,6 +12,7 @@ import net.topikachu.rag.business.document.service.DocumentService;
 import net.topikachu.rag.business.document.vo.BatchUploadResponse;
 import net.topikachu.rag.business.document.vo.UploadItemResult;
 import net.topikachu.rag.business.document.vo.UploadResult;
+import net.topikachu.rag.observability.TracingSupport;
 import net.topikachu.rag.service.etl.EtlJobStarter;
 import net.topikachu.rag.service.etl.EtlPipeline;
 import org.springframework.ai.vectorstore.VectorStore;
@@ -41,8 +42,10 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
@@ -57,6 +60,7 @@ public class DocumentServiceImpl implements DocumentService {
     private final EtlPipeline etlPipeline;
     private final VectorStore vectorStore;
     private final EtlJobStarter etlJobStarter;
+    private final TracingSupport tracingSupport;
 
     @Value("${rag.upload.max-size-bytes:52428800}")
     private long maxSizeBytes;
@@ -256,7 +260,9 @@ public class DocumentServiceImpl implements DocumentService {
             boolean overwrite,
             String userId,
             List<String> tags) {
-        return Mono.fromCallable(() -> {
+        return tracingSupport.traceMono("etl.upload_accept",
+                uploadTraceTags(fileName, null, userId, tags),
+                Mono.fromCallable(() -> {
                     validateFile(tempFile, fileName);
 
                     String finalFileName = sanitizeFileName(fileName);
@@ -315,7 +321,16 @@ public class DocumentServiceImpl implements DocumentService {
                         throw e;
                     }
                 })
-                .subscribeOn(Schedulers.boundedElastic());
+                .subscribeOn(Schedulers.boundedElastic()));
+    }
+
+    private Map<String, Object> uploadTraceTags(String fileName, String docUuid, String userId, List<String> tags) {
+        Map<String, Object> traceTags = new LinkedHashMap<>();
+        traceTags.put("document.file_name", fileName);
+        traceTags.put("document.doc_uuid", docUuid);
+        traceTags.put("document.user_id", userId);
+        traceTags.put("document.tags", tags == null ? "" : String.join(",", tags));
+        return traceTags;
     }
 
     private Mono<UploadResult> cleanupOnError(Path tempFile, Path target) {
