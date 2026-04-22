@@ -1,18 +1,22 @@
 package net.topikachu.rag.agent;
 
-import org.springframework.ai.document.Document;
-
 import java.util.List;
 
 public record AgentExecutionResult(
-        List<Document> sources,
+        List<EvidenceSnapshot> sources,
         List<AgentNote> notes,
-        String followup,
+        String followupPrompt,
+        List<String> followupOptions,
         String draft,
         String finalInstruction,
+        String answerMode,
         boolean revised
 ) {
     public boolean isFollowup() {
-        return followup != null && !followup.isBlank();
+        return followupOptions != null && !followupOptions.isEmpty();
+    }
+
+    public boolean isRefusal() {
+        return "refusal".equalsIgnoreCase(answerMode);
     }
 }

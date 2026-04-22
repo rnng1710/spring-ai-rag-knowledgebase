@@ -132,6 +132,21 @@ public class HybridSearchService {
         if (filterTags == null || filterTags.isEmpty()) {
             return null;
         }
-        return String.format("JSON_CONTAINS(metadata[\"tags\"], \"%s\")", filterTags.get(0));
+        List<String> normalizedTags = filterTags.stream()
+                .filter(tag -> tag != null && !tag.isBlank())
+                .map(String::trim)
+                .distinct()
+                .toList();
+        if (normalizedTags.isEmpty()) {
+            return null;
+        }
+        return normalizedTags.stream()
+                .map(tag -> String.format("JSON_CONTAINS(metadata[\"tags\"], \"%s\")", escapeFilterLiteral(tag)))
+                .reduce((left, right) -> "(" + left + " OR " + right + ")")
+                .orElse(null);
+    }
+
+    private String escapeFilterLiteral(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 }

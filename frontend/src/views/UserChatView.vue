@@ -112,6 +112,21 @@
                     <div v-if="msg.content" class="message-content" style="white-space: pre-wrap;">{{ msg.content }}</div>
                       <div v-else class="message-content" style="color:#909399; font-style:italic">{{ t("chat.thinking") }}</div>
 
+                    <div v-if="msg.followupOptions && msg.followupOptions.length > 0" class="followup-options">
+                      <el-button
+                        v-for="(option, optionIndex) in msg.followupOptions"
+                        :key="`${msg.id}-followup-${optionIndex}`"
+                        class="followup-option-btn"
+                        plain
+                        size="small"
+                        :loading="!!msg.followupPending"
+                        :disabled="!!msg.followupPending || loading"
+                        @click="submitFollowupOption(msg.id, option)"
+                      >
+                        {{ option }}
+                      </el-button>
+                    </div>
+
                     <div v-if="msg.mode === 'agent' && msg.agentTrace" class="agent-trace-block">
                       <div class="agent-stage-line">
                         <span class="agent-stage-pill">{{ stageLabel(msg.agentTrace.currentStage) }}</span>
@@ -245,6 +260,8 @@ interface ChatMessage {
   modelName?: string;
   sources?: SourceMeta[];
   agentTrace?: AgentTrace;
+  followupOptions?: string[];
+  followupPending?: boolean;
 }
 
 type ChatAction =
@@ -253,7 +270,7 @@ type ChatAction =
   | { type: "AGENT_NOTE_RECEIVED"; payload: { msgId: string; note: AgentTraceLog } }
   | { type: "SOURCES_RECEIVED"; payload: { msgId: string; sources: SourceMeta[] } }
   | { type: "FINAL_STREAM"; payload: { msgId: string; chunk: string } }
-  | { type: "FOLLOWUP_RECEIVED"; payload: { msgId: string; text: string } }
+  | { type: "FOLLOWUP_RECEIVED"; payload: { msgId: string; text: string; options: string[] } }
   | { type: "REQUEST_COMPLETED"; payload: { msgId: string } }
   | { type: "REQUEST_FAILED"; payload: { msgId: string; message: string } }
   | { type: "ABORT"; payload: { msgId: string } }
@@ -364,6 +381,8 @@ const dispatch = (action: ChatAction) => {
         status: "pending",
         modelName: action.payload.modelName,
         sources: [],
+        followupOptions: [],
+        followupPending: false,
         agentTrace: action.payload.mode === "agent"
           ? { currentStage: "idle", logs: [], isRevised: false }
           : undefined,
@@ -393,12 +412,16 @@ const dispatch = (action: ChatAction) => {
       updateMessageById(action.payload.msgId, (msg) => {
         msg.status = "streaming";
         msg.content += action.payload.chunk;
+        msg.followupOptions = [];
+        msg.followupPending = false;
       });
       return;
     case "FOLLOWUP_RECEIVED":
       updateMessageById(action.payload.msgId, (msg) => {
         msg.status = "done";
         msg.content = action.payload.text;
+        msg.followupOptions = action.payload.options;
+        msg.followupPending = false;
         if (msg.agentTrace) {
           msg.agentTrace.currentStage = "followup";
         }
@@ -416,6 +439,7 @@ const dispatch = (action: ChatAction) => {
       updateMessageById(action.payload.msgId, (msg) => {
         msg.status = "error";
         msg.content = msg.content || `[${t("chat.errorPrefix")}: ${action.payload.message}]`;
+        msg.followupPending = false;
         if (msg.agentTrace) {
           msg.agentTrace.currentStage = "error";
         }
@@ -432,12 +456,23 @@ const dispatch = (action: ChatAction) => {
   }
 };
 
-const startChat = async () => {
-  if(!question.value.trim()) return;
-  
-  const userInput = question.value;
-  question.value = "";
-  
+const setFollowupPending = (msgId: string, pending: boolean) => {
+  updateMessageById(msgId, (msg) => {
+    msg.followupPending = pending;
+  });
+};
+
+const submitChat = async (userInput: string, options?: { clearInput?: boolean; followupMsgId?: string }) => {
+  const trimmedInput = userInput.trim();
+  if (!trimmedInput) return;
+
+  if (options?.clearInput) {
+    question.value = "";
+  }
+  if (options?.followupMsgId) {
+    setFollowupPending(options.followupMsgId, true);
+  }
+
   const modelNameMap: Record<string, string> = {
     ollama: 'Qwen 2.5',
     deepseek: 'DeepSeek',
@@ -448,7 +483,7 @@ const startChat = async () => {
   activeMsgId.value = msgId;
   
   // Add User Message
-  messages.value.push({ id: `${msgId}-user`, role: 'user', mode: selectedMode.value, content: userInput, status: "done" });
+  messages.value.push({ id: `${msgId}-user`, role: 'user', mode: selectedMode.value, content: trimmedInput, status: "done" });
   scrollBottom();
   
   dispatch({ type: "START_REQUEST", payload: { msgId, mode: selectedMode.value, modelName: currentModelName } });
@@ -461,7 +496,7 @@ const startChat = async () => {
     await streamSsePost(
       apiUrl(`/api/v1/chat?conversationId=${encodeURIComponent(conversationId.value)}`),
       {
-        userInput,
+        userInput: trimmedInput,
         tags: selectedTag.value ? [selectedTag.value] : [],
         modelId: selectedModel.value,
         mode: selectedMode.value,
@@ -510,9 +545,16 @@ const startChat = async () => {
           }
           scrollBottom();
         } else if (event === "followup" && typeof payload === "object" && payload !== null) {
-          const followupPayload = payload as { msgId?: string; text?: string };
-          if (followupPayload.msgId && followupPayload.text) {
-            dispatch({ type: "FOLLOWUP_RECEIVED", payload: { msgId: followupPayload.msgId, text: followupPayload.text } });
+          const followupPayload = payload as { msgId?: string; text?: string; options?: string[] };
+          if (followupPayload.msgId && followupPayload.text && Array.isArray(followupPayload.options)) {
+            dispatch({
+              type: "FOLLOWUP_RECEIVED",
+              payload: {
+                msgId: followupPayload.msgId,
+                text: followupPayload.text,
+                options: followupPayload.options,
+              },
+            });
             scrollBottom();
           }
         } else if (event === "done" && typeof payload === "object" && payload !== null) {
@@ -539,7 +581,20 @@ const startChat = async () => {
     loading.value = false;
     activeController.value = null;
     activeMsgId.value = null;
+    if (options?.followupMsgId) {
+      setFollowupPending(options.followupMsgId, false);
+    }
   }
+};
+
+const startChat = async () => {
+  if(!question.value.trim()) return;
+  await submitChat(question.value, { clearInput: true });
+};
+
+const submitFollowupOption = async (followupMsgId: string, option: string) => {
+  if (loading.value) return;
+  await submitChat(option, { followupMsgId, clearInput: false });
 };
 
 const reset = () => {
@@ -914,6 +969,19 @@ const logout = () => {
 }
 .agent-log-text {
     color: #444746;
+}
+.followup-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 14px;
+}
+.followup-option-btn {
+    max-width: 100%;
+    white-space: normal;
+    text-align: left;
+    height: auto;
+    line-height: 1.5;
 }
 .sources-title {
     font-size: 13px;
