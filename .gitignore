@@ -63,3 +63,5 @@ diff.txt
 .claude/
 AGENTS.md
 CLAUDE.md
+backend/sql/20260429_acl_metadata_refresh.sql
+backend/sql/20260507_object_storage.sql
