@@ -5,6 +5,8 @@ export type AppRole = "ADMIN" | "USER";
 export interface JwtPayload {
   sub?: string;
   roles?: string[];
+  deptId?: string;
+  deptName?: string;
   exp?: number;
   [key: string]: unknown;
 }

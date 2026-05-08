@@ -2,6 +2,9 @@ package net.topikachu.rag.api;
 
 import lombok.extern.slf4j.Slf4j;
 import net.topikachu.rag.agent.AgentChatService;
+import net.topikachu.rag.auth.CurrentUserContext;
+import net.topikachu.rag.auth.CurrentUserContextService;
+import net.topikachu.rag.auth.SearchScope;
 import net.topikachu.rag.observability.TracingSupport;
 import net.topikachu.rag.service.chat.ChatService;
 import net.topikachu.rag.service.etl.EtlPipeline;
@@ -34,6 +37,7 @@ public class RestApi {
 	private final ChatService chatService;
 	private final AgentChatService agentChatService;
 	private final TracingSupport tracingSupport;
+	private final CurrentUserContextService currentUserContextService;
 
 	private final EtlPipeline etlPipeline;
 
@@ -52,7 +56,9 @@ public class RestApi {
 			@RequestHeader(value = "X-Question-Bucket", required = false) String questionBucket,
 			Mono<Principal> principalMono) {
 		return principalMono.flatMapMany(principal -> {
+			CurrentUserContext currentUserContext = currentUserContextService.resolveByUsername(principal.getName());
 			var conversationKey = String.format("%s:%s", principal.getName(), conversationId);
+			SearchScope searchScope = new SearchScope(chatRequest.spaceCodes(), chatRequest.tags());
 
 			String mode = chatRequest.mode();
 			if (!StringUtils.hasText(mode)) {
@@ -62,7 +68,7 @@ public class RestApi {
 			boolean useAgent = agentEnabled && "agent".equalsIgnoreCase(mode);
 			String msgId = StringUtils.hasText(chatRequest.msgId()) ? chatRequest.msgId() : ("msg-" + System.currentTimeMillis());
 			tagCurrentChatTrace(principal.getName(), conversationId, conversationKey, mode, chatRequest.modelId(),
-					locustRunId, questionId, questionBucket);
+					locustRunId, questionId, questionBucket, searchScope);
 
 			if (!agentEnabled && "agent".equalsIgnoreCase(mode)) {
 				log.warn("Agent mode requested while disabled. conversationId={}, user={}", conversationId, principal.getName());
@@ -83,7 +89,8 @@ public class RestApi {
 				return agentChatService.streamEvents(
 						chatRequest.userInput(),
 						conversationKey,
-						chatRequest.tags(),
+						currentUserContext,
+						searchScope,
 						chatRequest.modelId(),
 						msgId);
 			}
@@ -91,7 +98,8 @@ public class RestApi {
 			return chatService.streamWithSources(
 							chatRequest.userInput(),
 							conversationKey,
-							chatRequest.tags(),
+							currentUserContext,
+							searchScope,
 							chatRequest.modelId())
 					.flatMapMany(response -> {
 						List<Map<String, Object>> sourceMetadata = response.sources().stream()
@@ -148,7 +156,8 @@ public class RestApi {
 				.map(document -> (String) document.getMetadata().get(METADATA_SOURCE));
 	}
 
-	record ChatRequest(String userInput, List<String> tags, String modelId, String mode, String msgId) implements Serializable {
+	record ChatRequest(String userInput, List<String> tags, List<String> spaceCodes, String modelId, String mode,
+			String msgId) implements Serializable {
 	}
 
 	private void tagCurrentChatTrace(String username,
@@ -158,13 +167,16 @@ public class RestApi {
 			String modelId,
 			String locustRunId,
 			String questionId,
-			String questionBucket) {
+			String questionBucket,
+			SearchScope searchScope) {
 		Map<String, Object> tags = new LinkedHashMap<>();
 		tags.put("langfuse.user.id", username);
 		tags.put("langfuse.session.id", conversationKey);
 		tags.put("conversation.id", conversationId);
 		tags.put("chat.mode", mode);
 		tags.put("chat.model_id", modelId);
+		tags.put("chat.requested_spaces", searchScope == null ? "" : String.join(",", searchScope.requestedSpaceCodes()));
+		tags.put("chat.requested_tags", searchScope == null ? "" : String.join(",", searchScope.requestedTags()));
 		tags.put("locust.run_id", locustRunId);
 		tags.put("question.id", questionId);
 		tags.put("question.bucket", questionBucket);

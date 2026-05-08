@@ -2,6 +2,7 @@ package net.topikachu.rag.service.etl;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.extern.slf4j.Slf4j;
+import net.topikachu.rag.business.document.entity.AclRefreshStatus;
 import net.topikachu.rag.business.document.entity.DocumentStatus;
 import net.topikachu.rag.business.document.mapper.DocumentMapper;
 import net.topikachu.rag.observability.TracingSupport;
@@ -23,10 +24,7 @@ import java.nio.file.Path;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
-import java.util.HexFormat;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 @Component
 @Slf4j
@@ -37,20 +35,25 @@ public class EtlPipeline {
 	private final TextSplitter textSplitter;
 	// Injected mapper for database operations
 	private final DocumentMapper documentMapper;
+	private final DocumentChunkMetadataBuilder metadataBuilder;
 	private final org.springframework.data.redis.core.StringRedisTemplate redisTemplate;
 	private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 	private final TracingSupport tracingSupport;
 
 	@org.springframework.beans.factory.annotation.Value("${rag.etl.timeout.read-split-seconds:60}")
-	private long readSplitTimeoutSeconds;
+	private long SplitTimeoutSeconds;
 
 	@org.springframework.beans.factory.annotation.Value("${rag.etl.timeout.vectorize-seconds:300}")
 	private long vectorizeTimeoutSeconds;
+
+	@org.springframework.beans.factory.annotation.Value("${rag.etl.timeout.read-seconds:30}")
+	private long readingTimeoutSeconds;
 
 	public EtlPipeline(HybridVectorWriter hybridVectorWriter,
 			TextSplitter textSplitter,
 			DocReader documentReader,
 			DocumentMapper documentMapper,
+			DocumentChunkMetadataBuilder metadataBuilder,
 			org.springframework.data.redis.core.StringRedisTemplate redisTemplate,
 			com.fasterxml.jackson.databind.ObjectMapper objectMapper,
 			TracingSupport tracingSupport) {
@@ -58,6 +61,7 @@ public class EtlPipeline {
 		this.textSplitter = textSplitter;
 		this.documentReader = documentReader;
 		this.documentMapper = documentMapper;
+		this.metadataBuilder = metadataBuilder;
 		this.redisTemplate = redisTemplate;
 		this.objectMapper = objectMapper;
 		this.tracingSupport = tracingSupport;
@@ -86,130 +90,222 @@ public class EtlPipeline {
                         }));
 	}
 
-	// TODO::重构解析不同文件格式的策略，（考虑使用Python来处理数据的清洗和切分）
+
 	// Compatible with legacy single path ingestion, now accepts docUuid and userId
+//	public Mono<Void> ingestionByPath(Path path, String docUuid, String userId, List<String> tags) {
+//		return newIngestionByPath(path, docUuid, userId, tags);
+//	}
+
+	// TODO::重构解析不同文件格式的策略，（考虑使用Python来处理数据的清洗和切分）
 	public Mono<Void> ingestionByPath(Path path, String docUuid, String userId, List<String> tags) {
-		Map<String, Object> traceTags = etlTraceTags(path, docUuid, userId, tags);
-		Mono<Void> pipeline = Mono.defer(() -> {
-			// 1. Reading
-			return tracingSupport.traceMono("etl.read", traceTags,
-					publishStatus(docUuid, userId, DocumentStatus.READING, "Reading file...")
-					.then(Mono.fromCallable(() -> {
-						DocumentReader reader;
-						String fileName = path.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
+		EtlContext ctx = EtlContext.of(path, docUuid, userId, tags);
 
-						if (fileName.endsWith(".pdf")) {
-							// PDF: 强制按页切分，自动提取 page_number
-							PdfDocumentReaderConfig config = PdfDocumentReaderConfig.builder()
-									.withPageExtractedTextFormatter(ExtractedTextFormatter.builder()
-											.withNumberOfBottomTextLinesToDelete(1) // 可选：删除页脚干扰
-											.build())
-									.build();
-							reader = new PagePdfDocumentReader(path.toUri().toString(), config);
-						} else {
-							// 其他: 保持原样使用 Tika
-							reader = new TikaDocumentReader(path.toUri().toString());
-						}
-
-						List<Document> docs = reader.get();
-
-						// ======== 优化：单页保留与页首锚点注入 (Page-Document Hybrid) ========
-						if (path.toString().toLowerCase().endsWith(".pdf") && !docs.isEmpty()) {
-							java.util.List<Document> pageDocs = new java.util.ArrayList<>();
-							int pageCounter = 1;
-							for (Document pageDoc : docs) {
-								// 从元数据获取真实页码，若无则使用计数器
-								Object pageNumObj = pageDoc.getMetadata().get("page_number");
-								String pageNumStr = pageNumObj != null ? pageNumObj.toString()
-										: String.valueOf(pageCounter);
-
-								// 注入给大模型阅读的物理页眉锚点
-								String anchoredText = "[--- 以下为文件第 " + pageNumStr + " 页内容 ---]\n" + pageDoc.getText();
-
-								// 构造带有锚点且继承了原始 Metadata 的独立页 Document
-								java.util.Map<String, Object> pageMetadata = new java.util.HashMap<>(
-										pageDoc.getMetadata());
-								pageDocs.add(new Document(anchoredText, pageMetadata));
-								pageCounter++;
-							}
-							docs = pageDocs;
-						}
-						// ===================================================================
-
-						boolean isPdf = fileName.endsWith(".pdf");
-						docs = sanitizeDocuments(path, docs, isPdf);
-						if (docs.isEmpty()) {
-							throw new IllegalStateException("No usable text extracted after sanitization: " + path);
-						}
-
-						// 2. 注入 Metadata (Tags, UUID, FileName)
-						for (Document doc : docs) {
-							doc.getMetadata().put("doc_uuid", docUuid);
-							doc.getMetadata().put("file_name", path.getFileName().toString());
-							if (tags != null && !tags.isEmpty()) {
-								// Store as List object for Milvus JSON_CONTAINS array compatibility
-								doc.getMetadata().put("tags", tags);
-							}
-						}
-						return docs;
-					})
-							.subscribeOn(Schedulers.boundedElastic())));
-		})
-				.flatMap(docs -> {
-					// 2. Splitting
-					return tracingSupport.traceMono("etl.split", traceTags,
-							publishStatus(docUuid, userId, DocumentStatus.SPLITTING, "Splitting content...")
-									.then(Mono.fromCallable(() -> textSplitter.apply(docs))
-											.subscribeOn(Schedulers.boundedElastic())));
-				})
-				.timeout(java.time.Duration.ofSeconds(readSplitTimeoutSeconds))
-				.flatMap(splitDocs -> {
-					// 3. Vectorizing - Use HybridVectorWriter for dual vector storage
-					return publishStatus(docUuid, userId, DocumentStatus.VECTORIZING, "Writing to Vector Store...")
-							.then(Mono.defer(() -> {
-								if (!splitDocs.isEmpty()) {
-									// Write both dense and sparse vectors
-									return hybridVectorWriter.write(splitDocs);
-								}
-								return Mono.empty();
-							}).subscribeOn(Schedulers.boundedElastic()));
-				})
+		Mono<Void> pipeline = readDocuments(ctx)
+				.timeout(java.time.Duration.ofSeconds(readingTimeoutSeconds))
+				.flatMap(docs -> splitDocuments(ctx, docs))
+				.timeout(java.time.Duration.ofSeconds(SplitTimeoutSeconds))
+				.flatMap(splitDocs -> writeVectors(ctx, splitDocs))
 				.timeout(java.time.Duration.ofSeconds(vectorizeTimeoutSeconds))
-				.then(tracingSupport.traceMono("etl.finish", traceTags, completeStatus(docUuid, userId)))
-				.doOnSuccess(v -> log.info("IngestionByPath finished: {}", path))
-//				.doOnError(e -> {
-//					log.error("Error during ingestionByPath: {}", path, e);
-//					// 1. Cleanup Milvus vectors to prevent orphan data
-//					hybridVectorWriter.deleteByDocUuid(docUuid)
-//							.doOnError(ex -> log.warn("Cleanup failed for {}", docUuid, ex))
-//							.subscribe();
-//					// 2. Update DB with detailed error info
-//					updateFailedStatus(docUuid, userId, e).subscribe();
-//				})
-				.onErrorResume(e -> {
-					log.error("Error during ingestionByPath: {}", path, e);
+				.then(completeStatus(ctx))
+				.doOnSuccess(v -> log.info("IngestionByPath finished: {}", ctx.path()))
+				.onErrorResume(error -> failAndCleanup(ctx, error));
 
-					// 1. Cleanup Milvus vectors to prevent orphan data
-					// 2. Update DB with detailed error info
-					// 使用 thenCombine 或 zip 等将多个异步任务合并，最后再抛出原始错误
-					return hybridVectorWriter.deleteByDocUuid(docUuid)
-							.onErrorResume(ex -> {
-								log.warn("Cleanup failed for {}", docUuid, ex);
-								return Mono.empty();
-							})
-							.then(updateFailedStatus(docUuid, userId, e))
-							.then(Mono.error(e));
-				});
-		return tracingSupport.traceMono("etl.ingestion", traceTags, pipeline);
+		return tracingSupport.traceMono("etl.ingestion", ctx.traceTags(), pipeline);
 	}
 
-	private Map<String, Object> etlTraceTags(Path path, String docUuid, String userId, List<String> tags) {
+	private record EtlContext(
+			Path path,
+			String docUuid,
+			String userId,
+			List<String> tags,
+			String fileName,
+			boolean pdf,
+			Map<String, Object> traceTags
+	) {
+		public static EtlContext of(Path path, String docUuid, String userId, List<String> tags) {
+			String fileName = path.getFileName().toString();
+			boolean pdf = fileName.toLowerCase(Locale.ROOT).endsWith(".pdf");
+			Map<String, Object> traceTags = etlTraceTags(path, docUuid, userId, tags);
+			traceTags.put("document.file_ext", extension(fileName));
+			traceTags.put("document.is_pdf", pdf);
+			return new EtlContext(
+					path,
+					docUuid,
+					userId,
+					tags,
+					fileName,
+					pdf,
+					traceTags
+			);
+        }
+
+		Map<String, Object> tagsWith(String key, Object value) {
+			Map<String, Object> merged = new LinkedHashMap<>(traceTags);
+			merged.put(key, value);
+			return merged;
+		}
+
+		Map<String, Object> tagsWith(Map<String, Object> extra) {
+			Map<String, Object> merged = new LinkedHashMap<>(traceTags);
+			merged.putAll(extra);
+			return merged;
+		}
+	}
+
+	private Mono<List<Document>> readDocuments(EtlContext ctx) {
+		return tracingSupport.traceMono("etl.read", ctx.tagsWith("etl.stage", "read"),
+				publishStatus(ctx.docUuid(), ctx.userId,DocumentStatus.READING, "Reading file...")
+						.then(Mono.fromCallable(() -> {
+							DocumentReader reader = createReader(ctx.path());
+							List<Document> docs = reader.get();
+
+							if (ctx.pdf()) {
+								docs = applyPdfPageAnchors(docs);
+							}
+
+							docs = sanitizeDocuments(ctx.path(), docs, ctx.pdf());
+							if (docs.isEmpty()) {
+								throw new IllegalStateException(
+										"No usable text extracted after sanitization: " + ctx.path());
+							}
+
+							return enrichMetadata(ctx, docs);
+						}).subscribeOn(Schedulers.boundedElastic()))
+		);
+	}
+
+	private DocumentReader createReader(Path path) {
+
+		if (isPdf(path)) {
+			// PDF: 强制按页切分，自动提取 page_number
+			PdfDocumentReaderConfig config = PdfDocumentReaderConfig.builder()
+					.withPageExtractedTextFormatter(ExtractedTextFormatter.builder()
+							.withNumberOfBottomTextLinesToDelete(1) // 可选：删除页脚干扰
+							.build())
+					.build();
+			return new PagePdfDocumentReader(path.toUri().toString(), config);
+		} else {
+			// 其他: 保持原样使用 Tika
+			return new TikaDocumentReader(path.toUri().toString());
+		}
+	}
+
+	private boolean isPdf(Path path) {
+		String fileName = path.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
+        return fileName.endsWith(".pdf");
+	}
+
+	private List<Document> applyPdfPageAnchors(List<Document> docs) {
+			List<Document> pageDocs = new ArrayList<>();
+			int pageCounter = 1;
+			for (Document pageDoc : docs) {
+				// 从元数据获取真实页码，若无则使用计数器
+				Object pageNumObj = pageDoc.getMetadata().get("page_number");
+				String pageNumStr = pageNumObj != null ? pageNumObj.toString()
+						: String.valueOf(pageCounter);
+
+				// 注入给大模型阅读的物理页眉锚点
+				String anchoredText = "[--- 以下为文件第 " + pageNumStr + " 页内容 ---]\n" + pageDoc.getText();
+
+				// 构造带有锚点且继承了原始 Metadata 的独立页 Document
+				Map<String, Object> pageMetadata = new HashMap<>(
+						pageDoc.getMetadata());
+				// 拷贝一份map，因为map是共享同一个地址的，直接传入原始map，如果后面对其进行了修改，那么值就不准确了
+				pageDocs.add(new Document(anchoredText, pageMetadata));
+				pageCounter++;
+			}
+			return pageDocs;
+
+	}
+
+	private List<Document> enrichMetadata(EtlContext etlContext,List<Document> docs) {
+		net.topikachu.rag.business.document.entity.Document storedDocument = loadDocumentByDocUuid(etlContext.docUuid);
+		List<String> effectiveTags = etlContext.tags;
+		if (storedDocument != null && storedDocument.getTags() != null) {
+			effectiveTags = storedDocument.getTags();
+		}
+		for (Document doc : docs) {
+			Map<String, Object> rebuiltMetadata = metadataBuilder.build(
+					storedDocument,
+					etlContext.docUuid,
+					etlContext.path.getFileName().toString(),
+					effectiveTags,
+					doc.getMetadata(),
+					storedDocument == null ? 1 : storedDocument.getAclVersion());
+			doc.getMetadata().clear();
+			doc.getMetadata().putAll(rebuiltMetadata);
+		}
+
+		return docs;
+	}
+	private Mono<List<Document>> splitDocuments(EtlContext ctx, List<Document> docs) {
+		Map<String, Object> traceTags = ctx.tagsWith(Map.of(
+				"etl.stage", "split",
+				"etl.input_doc_count", docs.size()
+		));
+		return tracingSupport.traceMono("etl.split", traceTags,
+				publishStatus(ctx.docUuid, ctx.userId, DocumentStatus.SPLITTING, "Splitting content...")
+						.then(Mono.fromCallable(() -> textSplitter.apply(docs))
+								.subscribeOn(Schedulers.boundedElastic()))
+						.doOnNext(splitDocs -> log.info("Split documents: docUuid={}, inputDocs={}, chunks={}",
+								ctx.docUuid(), docs.size(), splitDocs.size())));
+	}
+	private Mono<Void> writeVectors(EtlContext ctx, List<Document> splitDocs) {
+		Map<String, Object> traceTags = ctx.tagsWith(Map.of(
+				"etl.stage", "vectorize",
+				"etl.chunk_count", splitDocs.size()
+		));
+		return tracingSupport.traceMono("etl.vectorize", traceTags,
+				publishStatus(ctx.docUuid, ctx.userId, DocumentStatus.VECTORIZING, "Writing to Vector Store...")
+						.then(Mono.defer(() -> {
+							if (!splitDocs.isEmpty()) {
+								// Write both dense and sparse vectors
+								return hybridVectorWriter.write(splitDocs);
+							}
+							return Mono.empty();
+						})));
+	}
+	private Mono<Void> failAndCleanup(EtlContext ctx, Throwable error) {
+		log.error("Error during ingestionByPath: {}", ctx.path, error);
+
+		// 1. Cleanup Milvus vectors to prevent orphan data
+		// 2. Update DB with detailed error info
+		// 使用 thenCombine 或 zip 等将多个异步任务合并，最后再抛出原始错误
+		Map<String, Object> extra = new LinkedHashMap<>();
+		extra.put("etl.stage", "failed");
+		extra.put("error.type", error == null ? "" : error.getClass().getSimpleName());
+		extra.put("error.message", extractUserMessage(error));
+		return tracingSupport.traceMono("etl.fail_cleanup", ctx.tagsWith(extra),
+				hybridVectorWriter.deleteByDocUuid(ctx.docUuid)
+						.onErrorResume(ex -> {
+							log.warn("Cleanup failed for {}", ctx.docUuid, ex);
+							return Mono.empty();
+						})
+						.then(updateFailedStatus(ctx.docUuid, ctx.userId, error))
+						.then(Mono.error(error)));
+	}
+
+	private Mono<Void> completeStatus(EtlContext ctx) {
+		return tracingSupport.traceMono("etl.finish",
+				ctx.tagsWith("etl.stage", "finish"),
+				completeStatus(ctx.docUuid(), ctx.userId()));
+	}
+
+	private static Map<String, Object> etlTraceTags(Path path, String docUuid, String userId, List<String> tags) {
 		Map<String, Object> traceTags = new LinkedHashMap<>();
 		traceTags.put("document.doc_uuid", docUuid);
 		traceTags.put("document.file_name", path == null ? "" : path.getFileName());
 		traceTags.put("document.user_id", userId);
 		traceTags.put("document.tags", tags == null ? "" : String.join(",", tags));
 		return traceTags;
+	}
+
+	private static String extension(String fileName) {
+		int idx = fileName.lastIndexOf('.');
+		if (idx < 0 || idx == fileName.length() - 1) {
+			return "";
+		}
+		return fileName.substring(idx + 1).toLowerCase(Locale.ROOT);
 	}
 
 	private List<Document> sanitizeDocuments(Path path, List<Document> docs, boolean isPdf) {
@@ -265,6 +361,16 @@ public class EtlPipeline {
 		return sanitizedDocs;
 	}
 
+	private net.topikachu.rag.business.document.entity.Document loadDocumentByDocUuid(String docUuid) {
+		if (docUuid == null || docUuid.isBlank()) {
+			return null;
+		}
+		return documentMapper.selectOne(
+				Wrappers.<net.topikachu.rag.business.document.entity.Document>lambdaQuery()
+						.eq(net.topikachu.rag.business.document.entity.Document::getDocUuid, docUuid)
+						.last("LIMIT 1"));
+	}
+
 	// Helper to publish status to DB and Redis non-blocking
 	private Mono<Void> publishStatus(String docUuid, String userId, DocumentStatus status, String msg) {
 		if (docUuid == null)
@@ -273,15 +379,6 @@ public class EtlPipeline {
 		return Mono.fromRunnable(() -> {
 			// 1. Update DB
 			try {
-				net.topikachu.rag.business.document.entity.Document update = new net.topikachu.rag.business.document.entity.Document();
-				update.setStatus(status.name());
-				// We use UpdateWrapper to update by docUuid (which is stored in ID or we need
-				// to find ID first)
-				// Assuming docUuid is NOT the PK 'id' but a field 'doc_uuid'.
-				// Actually SysUser id is UUID string, Document id is Long (auto-inc)?
-				// Let's check Document entity. Assuming it has doc_uuid field.
-				Wrappers.<net.topikachu.rag.business.document.entity.Document>lambdaUpdate();
-
 				documentMapper.update(null,
 						Wrappers.<net.topikachu.rag.business.document.entity.Document>lambdaUpdate()
 								.set(net.topikachu.rag.business.document.entity.Document::getStatus, status.name())
@@ -328,6 +425,9 @@ public class EtlPipeline {
 						Wrappers.<net.topikachu.rag.business.document.entity.Document>lambdaUpdate()
 								.set(net.topikachu.rag.business.document.entity.Document::getStatus,
 										DocumentStatus.FAILED.name())
+								.set(net.topikachu.rag.business.document.entity.Document::getAclRefreshStatus,
+										AclRefreshStatus.FAILED.name())
+								.set(net.topikachu.rag.business.document.entity.Document::getAclRefreshError, userMsg)
 								.set(net.topikachu.rag.business.document.entity.Document::getErrorMessage, userMsg)
 								.set(net.topikachu.rag.business.document.entity.Document::getErrorStack, techStack)
 								.setSql("retry_count = IFNULL(retry_count, 0) + 1")
@@ -361,6 +461,11 @@ public class EtlPipeline {
 					Wrappers.<net.topikachu.rag.business.document.entity.Document>lambdaUpdate()
 							.set(net.topikachu.rag.business.document.entity.Document::getStatus,
 									DocumentStatus.COMPLETED.name())
+							.set(net.topikachu.rag.business.document.entity.Document::getAclRefreshStatus,
+									AclRefreshStatus.SUCCESS.name())
+							.set(net.topikachu.rag.business.document.entity.Document::getAclRefreshError, null)
+							.set(net.topikachu.rag.business.document.entity.Document::getAclRefreshTime,
+									LocalDateTime.now())
 							.set(net.topikachu.rag.business.document.entity.Document::getUpdateDate,
 									LocalDateTime.now())
 							.eq(net.topikachu.rag.business.document.entity.Document::getDocUuid, docUuid)

@@ -73,4 +73,11 @@ public class SysUserController {
                 .subscribeOn(Schedulers.boundedElastic())
                 .thenReturn(AjaxResult.success("Role updated successfully", null));
     }
+
+    @PutMapping("/{id}/department")
+    public Mono<AjaxResult> updateDepartment(@PathVariable String id, @RequestBody Map<String, String> body) {
+        return Mono.fromRunnable(() -> sysUserService.updateUserDepartment(id, body.get("deptId"), body.get("deptName")))
+                .subscribeOn(Schedulers.boundedElastic())
+                .thenReturn(AjaxResult.success("Department updated successfully", null));
+    }
 }

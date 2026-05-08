@@ -2,15 +2,25 @@ package net.topikachu.rag.business.document.controller;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import net.topikachu.rag.auth.CurrentUserContextService;
+import net.topikachu.rag.auth.SearchScope;
 import net.topikachu.rag.business.document.service.DocumentService;
+import net.topikachu.rag.business.document.vo.DownloadedDocument;
+import net.topikachu.rag.business.document.vo.DocumentPermissionUpdateRequest;
 import net.topikachu.rag.common.AjaxResult;
 import net.topikachu.rag.observability.TracingSupport;
+import org.springframework.core.io.InputStreamResource;
+import org.springframework.core.io.Resource;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.multipart.FilePart;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -22,6 +32,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.security.Principal;
+import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -34,6 +45,7 @@ public class DocumentController {
 
     private final DocumentService documentService;
     private final TracingSupport tracingSupport;
+    private final CurrentUserContextService currentUserContextService;
 
     @PostMapping("/docs/upload")
     @PreAuthorize("hasRole('ADMIN')")
@@ -90,6 +102,13 @@ public class DocumentController {
                 .thenReturn(AjaxResult.success());
     }
 
+    @GetMapping("/docs/{id}/download")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<ResponseEntity<Resource>> download(@PathVariable String id) {
+        return documentService.downloadDocumentById(id)
+                .map(this::toDownloadResponse);
+    }
+
     @DeleteMapping("/docs")
     @PreAuthorize("hasRole('ADMIN')")
     public Mono<AjaxResult> removeBatch(@RequestBody List<String> ids) {
@@ -99,8 +118,21 @@ public class DocumentController {
 
     @GetMapping("/tags")
     @PreAuthorize("hasAnyRole('USER', 'ADMIN')")
-    public Mono<AjaxResult> getTags() {
-        return documentService.getAllTags()
+    public Mono<AjaxResult> getTags(@RequestParam(value = "spaceCodes", required = false) List<String> spaceCodes,
+                                    Mono<Principal> principalMono) {
+        return principalMono.map(Principal::getName)
+                .flatMap(username -> documentService.getAccessibleTags(
+                        currentUserContextService.resolveByUsername(username),
+                        new SearchScope(spaceCodes, List.of())))
+                .map(AjaxResult::success);
+    }
+
+    @GetMapping("/spaces")
+    @PreAuthorize("hasAnyRole('USER', 'ADMIN')")
+    public Mono<AjaxResult> getSpaces(Mono<Principal> principalMono) {
+        return principalMono.map(Principal::getName)
+                .flatMap(username -> documentService.getAccessibleSpaceCodes(
+                        currentUserContextService.resolveByUsername(username)))
                 .map(AjaxResult::success);
     }
 
@@ -117,6 +149,21 @@ public class DocumentController {
                 });
     }
 
+    @PatchMapping("/docs/{id}/permissions")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<AjaxResult> updatePermissions(@PathVariable String id,
+                                              @RequestBody DocumentPermissionUpdateRequest request) {
+        return documentService.updatePermissions(id, request)
+                .thenReturn(AjaxResult.success());
+    }
+
+    @PostMapping("/docs/backfill-acl-metadata")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<AjaxResult> backfillAclMetadata() {
+        return documentService.backfillAclMetadata()
+                .map(count -> AjaxResult.success("ACL metadata backfill submitted", count));
+    }
+
     private void tagCurrentUploadTrace(String userId,
             String fileName,
             boolean overwrite,
@@ -129,5 +176,15 @@ public class DocumentController {
         traceTags.put("document.tags", tags == null ? "" : String.join(",", tags));
         traceTags.put("locust.run_id", locustRunId);
         tracingSupport.tagCurrent(traceTags);
+    }
+
+    private ResponseEntity<Resource> toDownloadResponse(DownloadedDocument document) {
+        ContentDisposition contentDisposition = ContentDisposition.attachment()
+                .filename(document.fileName(), StandardCharsets.UTF_8)
+                .build();
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .header(HttpHeaders.CONTENT_DISPOSITION, contentDisposition.toString())
+                .body(new InputStreamResource(document.inputStream()));
     }
 }

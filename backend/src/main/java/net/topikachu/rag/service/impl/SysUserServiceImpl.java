@@ -54,7 +54,7 @@ public class SysUserServiceImpl implements SysUserService {
         }
 
         // Generate tokens
-        return tokenService.generateTokens(user.getUsername(), user.getRole());
+        return tokenService.generateTokens(user);
     }
 
     @Override
@@ -110,6 +110,16 @@ public class SysUserServiceImpl implements SysUserService {
         SysUser user = sysUserMapper.selectById(id);
         if (user != null) {
             user.setRole(role);
+            sysUserMapper.updateById(user);
+        }
+    }
+
+    @Override
+    public void updateUserDepartment(String id, String deptId, String deptName) {
+        SysUser user = sysUserMapper.selectById(id);
+        if (user != null) {
+            user.setDeptId(deptId);
+            user.setDeptName(deptName);
             sysUserMapper.updateById(user);
         }
     }

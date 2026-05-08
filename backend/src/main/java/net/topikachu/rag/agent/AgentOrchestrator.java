@@ -1,6 +1,8 @@
 package net.topikachu.rag.agent;
 
 import lombok.extern.slf4j.Slf4j;
+import net.topikachu.rag.auth.CurrentUserContext;
+import net.topikachu.rag.auth.SearchScope;
 import net.topikachu.rag.observability.TracingSupport;
 import net.topikachu.rag.service.chat.ReactiveChatGateway;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategy;
@@ -69,14 +71,25 @@ public class AgentOrchestrator {
                                                   String userInput,
                                                   String conversationId,
                                                   String msgId,
-                                                  List<String> tags) {
+                                                  CurrentUserContext currentUserContext,
+                                                  SearchScope searchScope) {
         String requestId = UUID.randomUUID().toString();
-        AgentExecutionContext executionContext = new AgentExecutionContext(requestId, conversationId, msgId, userInput, tags);
+        List<String> selectedTags = searchScope == null ? List.of() : searchScope.requestedTags();
+        List<String> selectedSpaces = searchScope == null ? List.of() : searchScope.requestedSpaceCodes();
+        AgentExecutionContext executionContext = new AgentExecutionContext(
+                requestId,
+                conversationId,
+                msgId,
+                userInput,
+                selectedTags,
+                selectedSpaces);
         executionContext.addNote(AgentStage.PLANNING, "decision", "正在规划检索与回答步骤。");
 
         AgentKnowledgeTools toolObject = new AgentKnowledgeTools(
                 knowledgeService,
                 executionContext,
+                currentUserContext,
+                searchScope == null ? SearchScope.empty() : searchScope,
                 agentToolBridge,
                 reactiveChatGateway,
                 strategy,
@@ -91,11 +104,13 @@ public class AgentOrchestrator {
         Mono<AgentExecutionResult> pipeline = reactiveChatGateway.runToolPhase(
                         strategy.getChatClient(),
                         toolPhasePrompt(),
-                        Map.of("preselectedTags", summarizeTags(tags)),
+                        Map.of(
+                                "preselectedTags", summarizeValues(selectedTags),
+                                "preselectedSpaces", summarizeValues(selectedSpaces)),
                         messages,
                         List.of(toolCallAdvisor),
                         toolCallbacks,
-                        toolContext(executionContext, tags),
+                        toolContext(executionContext),
                         AgentResolution.class)
                 .map(resolution -> toExecutionResult(executionContext, resolution))
                 .switchIfEmpty(Mono.fromSupplier(() -> noEvidenceFollowup(executionContext)))
@@ -109,6 +124,14 @@ public class AgentOrchestrator {
                         "chat.msg_id", msgId,
                         "agent.input_chars", userInput == null ? 0 : userInput.length()),
                 pipeline);
+    }
+
+    public Mono<AgentExecutionResult> orchestrate(ChatModelStrategy strategy,
+                                                  String userInput,
+                                                  String conversationId,
+                                                  String msgId,
+                                                  List<String> tags) {
+        return orchestrate(strategy, userInput, conversationId, msgId, null, new SearchScope(List.of(), tags));
     }
 
     private AgentExecutionResult toExecutionResult(AgentExecutionContext executionContext, AgentResolution resolution) {
@@ -259,20 +282,21 @@ public class AgentOrchestrator {
                 .toList();
     }
 
-    private Map<String, Object> toolContext(AgentExecutionContext executionContext, List<String> tags) {
+    private Map<String, Object> toolContext(AgentExecutionContext executionContext) {
         Map<String, Object> context = new LinkedHashMap<>();
         context.put("requestId", executionContext.requestId());
         context.put("conversationId", executionContext.conversationId());
         context.put("msgId", executionContext.msgId());
-        context.put("preselectedTags", tags == null ? List.of() : List.copyOf(tags));
+        context.put("preselectedTags", executionContext.selectedTags());
+        context.put("requestedSpaceCodes", executionContext.selectedSpaceCodes());
         return context;
     }
 
-    private String summarizeTags(List<String> tags) {
-        if (tags == null || tags.isEmpty()) {
+    private String summarizeValues(List<String> values) {
+        if (values == null || values.isEmpty()) {
             return "无";
         }
-        return String.join(", ", tags);
+        return String.join(", ", values);
     }
 
     private String normalizeType(String type) {
@@ -339,9 +363,13 @@ public class AgentOrchestrator {
                 13. 如果 type=answer 且 answerMode=refusal，也必须输出同样结构的 JSON，只是把 answerMode 设为 refusal。
                 14. 不要把未选中的证据事实写入 draftAnswer 或 finalInstruction。
                 15. 如果用户已经预选标签，请优先尊重这些标签。
+                16. 如果用户已经限制空间范围，所有检索都只能在这些空间内继续收窄，不能越权扩大。
 
                 当前预选标签：
                 {preselectedTags}
+
+                当前预选空间：
+                {preselectedSpaces}
                 """;
     }
 }

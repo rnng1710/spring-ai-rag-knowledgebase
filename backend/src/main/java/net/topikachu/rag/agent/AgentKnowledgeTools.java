@@ -1,5 +1,7 @@
 package net.topikachu.rag.agent;
 
+import net.topikachu.rag.auth.CurrentUserContext;
+import net.topikachu.rag.auth.SearchScope;
 import net.topikachu.rag.service.chat.ReactiveChatGateway;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategy;
 import org.springframework.ai.document.Document;
@@ -21,6 +23,8 @@ public class AgentKnowledgeTools {
 
     private final AgentKnowledgeService knowledgeService;
     private final AgentExecutionContext executionContext;
+    private final CurrentUserContext currentUserContext;
+    private final SearchScope baseSearchScope;
     private final AgentToolBridge toolBridge;
     private final ReactiveChatGateway reactiveChatGateway;
     private final ChatModelStrategy strategy;
@@ -31,6 +35,8 @@ public class AgentKnowledgeTools {
 
     public AgentKnowledgeTools(AgentKnowledgeService knowledgeService,
                                AgentExecutionContext executionContext,
+                               CurrentUserContext currentUserContext,
+                               SearchScope baseSearchScope,
                                AgentToolBridge toolBridge,
                                ReactiveChatGateway reactiveChatGateway,
                                ChatModelStrategy strategy,
@@ -40,6 +46,8 @@ public class AgentKnowledgeTools {
                                int maxRepeatedQueryCount) {
         this.knowledgeService = knowledgeService;
         this.executionContext = executionContext;
+        this.currentUserContext = currentUserContext;
+        this.baseSearchScope = baseSearchScope == null ? SearchScope.empty() : baseSearchScope;
         this.toolBridge = toolBridge;
         this.reactiveChatGateway = reactiveChatGateway;
         this.strategy = strategy;
@@ -47,6 +55,29 @@ public class AgentKnowledgeTools {
         this.maxToolCalls = maxToolCalls;
         this.maxEvidenceCount = maxEvidenceCount;
         this.maxRepeatedQueryCount = maxRepeatedQueryCount;
+    }
+
+    public AgentKnowledgeTools(AgentKnowledgeService knowledgeService,
+                               AgentExecutionContext executionContext,
+                               AgentToolBridge toolBridge,
+                               ReactiveChatGateway reactiveChatGateway,
+                               ChatModelStrategy strategy,
+                               Duration timeout,
+                               int maxToolCalls,
+                               int maxEvidenceCount,
+                               int maxRepeatedQueryCount) {
+        this(
+                knowledgeService,
+                executionContext,
+                null,
+                SearchScope.empty(),
+                toolBridge,
+                reactiveChatGateway,
+                strategy,
+                timeout,
+                maxToolCalls,
+                maxEvidenceCount,
+                maxRepeatedQueryCount);
     }
 
     @Tool(name = "searchKnowledgeSnippets", description = "在知识库中检索与问题相关的片段级证据。tagsAnyOf 表示任一标签命中，不是全部标签同时命中。仅当需要证据时调用。")
@@ -91,8 +122,13 @@ public class AgentKnowledgeTools {
         executionContext.incrementSearchInvocationCount();
 
         try {
+            SearchScope effectiveSearchScope = baseSearchScope.mergeRequestedTags(request.tagsAnyOf());
             List<Document> documents = toolBridge.block(
-                    knowledgeService.searchKnowledgeSnippets(request.query(), request.tagsAnyOf(), request.topK()),
+                    knowledgeService.searchKnowledgeSnippets(
+                            request.query(),
+                            currentUserContext,
+                            effectiveSearchScope,
+                            request.topK()),
                     timeout,
                     "searchKnowledgeSnippets");
             if (documents.isEmpty()) {
@@ -160,7 +196,7 @@ public class AgentKnowledgeTools {
 
         try {
             List<String> tags = toolBridge.block(
-                    knowledgeService.listAvailableTags(),
+                    knowledgeService.listAvailableTags(currentUserContext, baseSearchScope),
                     timeout,
                     "listAvailableTags");
             executionContext.addNote(AgentStage.PLANNING, "tool_result", "已获取可用标签列表。");
@@ -340,6 +376,7 @@ public class AgentKnowledgeTools {
                 当前检索缺口类型：{retrievalGapType}
                 允许的澄清维度：{allowedFocusTypes}
                 当前已选标签：{selectedTags}
+                当前空间范围：{selectedSpaceCodes}
 
                 检索历史：
                 {retrievalHistory}
@@ -358,6 +395,9 @@ public class AgentKnowledgeTools {
                 "selectedTags", executionContext.selectedTags().isEmpty()
                         ? "无"
                         : String.join(", ", executionContext.selectedTags()),
+                "selectedSpaceCodes", executionContext.selectedSpaceCodes().isEmpty()
+                        ? "无"
+                        : String.join(", ", executionContext.selectedSpaceCodes()),
                 "retrievalHistory", summarizeRetrievalHistory(),
                 "retrievedEvidence", summarizeRetrievedEvidence());
     }

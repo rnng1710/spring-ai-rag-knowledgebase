@@ -113,7 +113,7 @@ public class AuthController {
                     if (user == null) {
                         throw new IllegalArgumentException("User not found");
                     }
-                    return tokenService.generateTokens(username, user.getRole());
+                    return tokenService.generateTokens(user);
                 })
                 .subscribeOn(Schedulers.boundedElastic())
                 .map(AjaxResult::success)

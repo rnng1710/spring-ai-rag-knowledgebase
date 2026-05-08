@@ -71,10 +71,23 @@ public class Langchain4jSplitterAdapter extends TextSplitter {
                                 }
                             })
                             .map(result -> {
-                                Map<String, Object> springMetadata = new HashMap<>(springDoc.getMetadata());
+                                Map<String, Object> springMetadata = sanitizeMetadata(springDoc.getMetadata());
                                 return new Document(result.text(), springMetadata);
                             });
                 })
                 .collect(Collectors.toList()); // 最终聚合成一维 List<Document>要求的签名
+    }
+
+    private Map<String, Object> sanitizeMetadata(Map<String, Object> metadata) {
+        Map<String, Object> sanitized = new HashMap<>();
+        if (metadata == null || metadata.isEmpty()) {
+            return sanitized;
+        }
+        metadata.forEach((key, value) -> {
+            if (key != null && value != null) {
+                sanitized.put(key, value);
+            }
+        });
+        return sanitized;
     }
 }

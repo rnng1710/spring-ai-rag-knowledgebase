@@ -11,6 +11,8 @@
       <el-table :data="users" v-loading="loading" style="width: 100%">
         <el-table-column prop="id" :label="t('users.id')" width="220" />
         <el-table-column prop="username" :label="t('common.username')" />
+        <el-table-column prop="deptId" :label="t('users.deptId')" min-width="140" />
+        <el-table-column prop="deptName" :label="t('users.deptName')" min-width="160" />
         <el-table-column prop="role" :label="t('common.role')">
           <template #default="scope">
             <el-tag :type="scope.row.role === 'ADMIN' ? 'danger' : 'success'" size="small">
@@ -27,6 +29,7 @@
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="250" fixed="right">
           <template #default="scope">
+            <el-button size="small" @click="showDeptDialog(scope.row)">{{ t("users.editDept") }}</el-button>
             <el-button size="small" @click="handleResetPassword(scope.row)">{{ t("users.resetPwd") }}</el-button>
             <el-button 
                 size="small" 
@@ -63,11 +66,41 @@
             <el-option :label="t('users.adminRole')" value="ADMIN" />
           </el-select>
         </el-form-item>
+        <el-form-item :label="t('users.deptId')">
+          <el-input v-model="form.deptId" :placeholder="t('users.enterDeptId')" />
+        </el-form-item>
+        <el-form-item :label="t('users.deptName')">
+          <el-input v-model="form.deptName" :placeholder="t('users.enterDeptName')" />
+        </el-form-item>
       </el-form>
       <template #footer>
         <span class="dialog-footer">
           <el-button @click="dialogVisible = false">{{ t("common.cancel") }}</el-button>
           <el-button type="primary" :loading="submitting" @click="submitForm">
+            {{ t("common.confirm") }}
+          </el-button>
+        </span>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="deptDialogVisible"
+      :title="t('users.editDept')"
+      width="420px"
+      destroy-on-close
+    >
+      <el-form :model="deptForm" label-width="100px">
+        <el-form-item :label="t('users.deptId')">
+          <el-input v-model="deptForm.deptId" :placeholder="t('users.enterDeptId')" />
+        </el-form-item>
+        <el-form-item :label="t('users.deptName')">
+          <el-input v-model="deptForm.deptName" :placeholder="t('users.enterDeptName')" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="deptDialogVisible = false">{{ t("common.cancel") }}</el-button>
+          <el-button type="primary" :loading="deptSubmitting" @click="submitDeptForm">
             {{ t("common.confirm") }}
           </el-button>
         </span>
@@ -81,7 +114,7 @@ import { ref, onMounted, reactive } from 'vue';
 import { Plus } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { FormInstance, FormRules } from 'element-plus';
-import { getUsers, createUser, deleteUser, resetUserPassword, type User } from '../../api/user';
+import { getUsers, createUser, deleteUser, resetUserPassword, updateUserDepartment, type User } from '../../api/user';
 import { useI18n } from 'vue-i18n';
 
 const { t } = useI18n();
@@ -90,12 +123,22 @@ const users = ref<User[]>([]);
 const loading = ref(false);
 const dialogVisible = ref(false);
 const submitting = ref(false);
+const deptDialogVisible = ref(false);
+const deptSubmitting = ref(false);
 const formRef = ref<FormInstance>();
+const editingUserId = ref<string>("");
 
 const form = reactive({
   username: '',
   password: '',
-  role: 'USER'
+  role: 'USER',
+  deptId: '',
+  deptName: ''
+});
+
+const deptForm = reactive({
+  deptId: '',
+  deptName: ''
 });
 
 const rules = reactive<FormRules>({
@@ -119,6 +162,8 @@ const showAddDialog = () => {
     form.username = '';
     form.password = '';
     form.role = 'USER';
+    form.deptId = '';
+    form.deptName = '';
     dialogVisible.value = true;
 };
 
@@ -139,6 +184,31 @@ const submitForm = async () => {
             }
         }
     });
+};
+
+const showDeptDialog = (row: User) => {
+    editingUserId.value = row.id;
+    deptForm.deptId = row.deptId || '';
+    deptForm.deptName = row.deptName || '';
+    deptDialogVisible.value = true;
+};
+
+const submitDeptForm = async () => {
+    if (!editingUserId.value) return;
+    deptSubmitting.value = true;
+    try {
+        await updateUserDepartment(editingUserId.value, {
+            deptId: deptForm.deptId,
+            deptName: deptForm.deptName
+        });
+        ElMessage.success(t("users.departmentUpdated"));
+        deptDialogVisible.value = false;
+        fetchUsers();
+    } catch (e: any) {
+        ElMessage.error(e.message || t("users.departmentUpdateFailed"));
+    } finally {
+        deptSubmitting.value = false;
+    }
 };
 
 const handleDelete = (row: User) => {

@@ -1,6 +1,8 @@
 package net.topikachu.rag.service.chat;
 
 import lombok.extern.slf4j.Slf4j;
+import net.topikachu.rag.auth.CurrentUserContext;
+import net.topikachu.rag.auth.SearchScope;
 import net.topikachu.rag.evaluation.ContextNode;
 import net.topikachu.rag.evaluation.EvaluationConfig;
 import net.topikachu.rag.evaluation.EvaluationResultItem;
@@ -67,7 +69,7 @@ public class ChatService {
 
     public Mono<List<Document>> retrieveForEvaluation(String query, boolean useSparseSearch, boolean useRerank, int topK) {
         int fetchK = useRerank ? hybridTopK : topK;
-        return hybridSearchService.hybridSearch(query, null, fetchK, useSparseSearch)
+        return hybridSearchService.hybridSearch(query, null, SearchScope.empty(), fetchK, useSparseSearch)
                 .flatMap(candidates -> {
                     if (useRerank) {
                         return rerankService.rerank(query, candidates, topK);
@@ -77,20 +79,26 @@ public class ChatService {
     }
 
     // TODO:: 精确计算token消耗量
-    public Mono<ChatStreamResponse> streamWithSources(String userInput, String conversationId, List<String> filterTags,
+    public Mono<ChatStreamResponse> streamWithSources(String userInput, String conversationId,
+            CurrentUserContext currentUserContext, SearchScope searchScope,
             String modelId) {
-        log.info("Processing query: '{}', conversationId: {}, tags: {}, modelId: {}", userInput, conversationId,
-                filterTags, modelId);
+        log.info("Processing query: '{}', conversationId: {}, spaces: {}, tags: {}, modelId: {}, user={}",
+                userInput, conversationId,
+                searchScope == null ? List.of() : searchScope.requestedSpaceCodes(),
+                searchScope == null ? List.of() : searchScope.requestedTags(),
+                modelId,
+                currentUserContext == null ? null : currentUserContext.username());
 
         long searchStart = System.currentTimeMillis();
         Map<String, Object> traceTags = Map.of(
                 "chat.mode", "rag",
                 "chat.model_id", modelId == null ? "" : modelId,
                 "chat.conversation_id", conversationId,
-                "rag.filter_tags", filterTags == null ? "" : String.join(",", filterTags));
+                "rag.filter_tags", searchScope == null ? "" : String.join(",", searchScope.requestedTags()),
+                "rag.requested_spaces", searchScope == null ? "" : String.join(",", searchScope.requestedSpaceCodes()));
 
         return tracingSupport.traceMono("rag.hybrid_search", traceTags,
-                        hybridSearchService.hybridSearch(userInput, filterTags, hybridTopK))
+                        hybridSearchService.hybridSearch(userInput, currentUserContext, searchScope, hybridTopK))
                 .doOnNext(candidates -> log.debug("Hybrid search returned {} candidates in {}ms",
                         candidates.size(), System.currentTimeMillis() - searchStart))
                 .doOnError(error -> log.error("Retrieval stage failed for query='{}', conversationId={}",

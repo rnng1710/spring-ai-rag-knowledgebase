@@ -36,6 +36,16 @@ public class SysUser extends BaseEntity {
     private String role;
 
     /**
+     * Department ID
+     */
+    private String deptId;
+
+    /**
+     * Department name
+     */
+    private String deptName;
+
+    /**
      * Account status
      */
     private Boolean enabled = true;

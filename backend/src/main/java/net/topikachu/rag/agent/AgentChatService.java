@@ -1,6 +1,8 @@
 package net.topikachu.rag.agent;
 
 import lombok.extern.slf4j.Slf4j;
+import net.topikachu.rag.auth.CurrentUserContext;
+import net.topikachu.rag.auth.SearchScope;
 import net.topikachu.rag.ai.memory.BlockingChatMemoryService;
 import net.topikachu.rag.service.chat.ReactiveChatGateway;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategy;
@@ -48,17 +50,22 @@ public class AgentChatService {
 
     public Flux<ServerSentEvent<Object>> streamEvents(String userInput,
                                                       String conversationId,
-                                                      List<String> filterTags,
+                                                      CurrentUserContext currentUserContext,
+                                                      SearchScope searchScope,
                                                       String modelId,
                                                       String msgId) {
-        log.info("Agent processing query: '{}', conversationId: {}, tags: {}, modelId: {}", userInput, conversationId,
-                filterTags, modelId);
+        log.info("Agent processing query: '{}', conversationId: {}, spaces: {}, tags: {}, modelId: {}, user={}",
+                userInput, conversationId,
+                searchScope == null ? List.of() : searchScope.requestedSpaceCodes(),
+                searchScope == null ? List.of() : searchScope.requestedTags(),
+                modelId,
+                currentUserContext == null ? null : currentUserContext.username());
 
         return Mono.fromCallable(() -> conversationExecutionGuard.acquire(conversationId))
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMapMany(lease -> {
                     agentTurnStateStore.createPending(msgId, conversationId, userInput);
-                    return executor.execute(userInput, conversationId, msgId, filterTags, modelId)
+                    return executor.execute(userInput, conversationId, msgId, currentUserContext, searchScope, modelId)
                             .flatMapMany(result -> {
                                 Flux<ServerSentEvent<Object>> traceEvents = buildTraceEvents(result.notes(), msgId);
                                 if (result.isFollowup()) {

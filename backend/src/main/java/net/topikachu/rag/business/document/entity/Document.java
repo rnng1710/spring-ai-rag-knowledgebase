@@ -9,21 +9,12 @@ import net.topikachu.rag.common.BaseEntity;
 @TableName(value = "knowledge_document", autoResultMap = true)
 public class Document extends BaseEntity {
 
-    /**
-     * file UUID
-     */
     @TableField("DOC_UUID")
     private String docUuid;
 
-    /**
-     * file name
-     */
     @TableField("FILE_NAME")
     private String fileName;
 
-    /**
-     * file name
-     */
     @TableField("STATUS")
     private String status;
 
@@ -38,21 +29,42 @@ public class Document extends BaseEntity {
     @TableField(typeHandler = com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler.class)
     private java.util.List<String> tags;
 
-    /**
-     * User-friendly error message for display
-     */
-    @TableField("error_message")
+    @TableField("SPACE_CODE")
+    private String spaceCode;
+
+    @TableField("OWNER_DEPT_ID")
+    private String ownerDeptId;
+
+    @TableField(value = "ALLOWED_ROLES", typeHandler = com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler.class)
+    private java.util.List<String> allowedRoles;
+
+    @TableField(value = "ALLOWED_DEPT_IDS", typeHandler = com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler.class)
+    private java.util.List<String> allowedDeptIds;
+
+    @TableField("IS_PUBLIC")
+    private Boolean isPublic;
+
+    @TableField("ACL_VERSION")
+    private Integer aclVersion;
+
+    @TableField("ACL_REFRESH_STATUS")
+    private String aclRefreshStatus;
+
+    @TableField("ACL_REFRESH_ERROR")
+    private String aclRefreshError;
+
+    @TableField("ACL_REFRESH_TIME")
+    private java.time.LocalDateTime aclRefreshTime;
+
+    @TableField("ERROR_MESSAGE")
     private String errorMessage;
 
-    /**
-     * Technical error stack trace for debugging
-     */
-    @TableField("error_stack")
+    @TableField("ERROR_STACK")
     private String errorStack;
 
-    /**
-     * Retry count to prevent infinite retry loops
-     */
-    @TableField("retry_count")
+    @TableField("RETRY_COUNT")
     private Integer retryCount;
+
+    @TableField("OBJECT_KEY")
+    private String objectKey;
 }

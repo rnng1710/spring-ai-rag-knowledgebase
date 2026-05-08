@@ -17,6 +17,7 @@ public class AgentExecutionContext {
     private final String msgId;
     private final String originalUserInput;
     private final List<String> selectedTags;
+    private final List<String> selectedSpaceCodes;
     private final Instant startedAt;
     private final AtomicLong sequence = new AtomicLong();
     private final AtomicInteger toolCalls = new AtomicInteger();
@@ -35,13 +36,23 @@ public class AgentExecutionContext {
                                  String conversationId,
                                  String msgId,
                                  String originalUserInput,
-                                 List<String> selectedTags) {
+                                 List<String> selectedTags,
+                                 List<String> selectedSpaceCodes) {
         this.requestId = requestId;
         this.conversationId = conversationId;
         this.msgId = msgId;
         this.originalUserInput = originalUserInput;
         this.selectedTags = selectedTags == null ? List.of() : List.copyOf(selectedTags);
+        this.selectedSpaceCodes = selectedSpaceCodes == null ? List.of() : List.copyOf(selectedSpaceCodes);
         this.startedAt = Instant.now();
+    }
+
+    public AgentExecutionContext(String requestId,
+                                 String conversationId,
+                                 String msgId,
+                                 String originalUserInput,
+                                 List<String> selectedTags) {
+        this(requestId, conversationId, msgId, originalUserInput, selectedTags, List.of());
     }
 
     public String requestId() {
@@ -66,6 +77,10 @@ public class AgentExecutionContext {
 
     public List<String> selectedTags() {
         return selectedTags;
+    }
+
+    public List<String> selectedSpaceCodes() {
+        return selectedSpaceCodes;
     }
 
     public synchronized void addNote(AgentStage stage, String kind, String text) {

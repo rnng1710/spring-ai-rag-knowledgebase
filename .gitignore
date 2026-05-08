@@ -60,3 +60,6 @@ evaluation/
 rerank/
 rerank-service/
 diff.txt
+.claude/
+AGENTS.md
+CLAUDE.md

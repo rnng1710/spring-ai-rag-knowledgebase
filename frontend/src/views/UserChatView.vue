@@ -6,13 +6,14 @@
         <div class="chat-sub">{{ t("chat.signedInAs", { username }) }}</div>
       </div>
       
-      <!-- Knowledge Base Selector -->
+      <!-- Space Scope Selector -->
       <div class="kb-selector" style="margin-bottom: 20px; padding: 0 12px;">
-         <div style="font-size:12px; color:#444746; margin-bottom:8px; font-weight:500">{{ t("chat.kbTag") }}</div>
-         <el-select v-model="selectedTag" :placeholder="t('chat.selectKb')" size="small" clearable>
+         <div style="font-size:12px; color:#444746; margin-bottom:8px; font-weight:500">{{ t("chat.spaceScope") }}</div>
+         <el-select v-model="selectedSpaces" :placeholder="t('chat.selectSpaces')" size="small" multiple clearable collapse-tags collapse-tags-tooltip>
             <template #prefix><el-icon><Collection /></el-icon></template>
-            <el-option v-for="tag in tagsOptions" :key="tag" :label="tag" :value="tag" />
+            <el-option v-for="space in spaceOptions" :key="space" :label="space" :value="space" />
           </el-select>
+         <div style="font-size:12px; color:#777; margin-top:8px;">{{ t("chat.allAccessibleSpaces") }}</div>
       </div>
 
       <el-button class="chat-action" @click="reset">
@@ -198,7 +199,7 @@ import { ref, nextTick, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { apiUrl } from "../api/client";
 import { streamSsePost } from "../api/sse";
-import { getAllTags } from "../api/docs";
+import { listAccessibleSpaces } from "../api/docs";
 import { Plus, SwitchButton, Position, Close, Collection } from "@element-plus/icons-vue";
 import { clearAuthSession, getAccessToken, getUsernameFromAccessToken } from "../utils/auth";
 import { useI18n } from "vue-i18n";
@@ -208,7 +209,7 @@ const { t } = useI18n();
 const username = ref(getUsernameFromAccessToken(getAccessToken()) || localStorage.getItem("auth_user") || "user");
 const conversationId = ref(`conv-${Math.random().toString(36).slice(2, 8)}`);
 const question = ref("");
-const selectedTag = ref("");
+const selectedSpaces = ref<string[]>([]);
 const selectedModel = ref("ollama");
 const selectedMode = ref<"rag" | "agent">("rag");
 const modeOptions = [
@@ -278,13 +279,13 @@ type ChatAction =
 
 const messages = ref<ChatMessage[]>([]);
 const loading = ref(false);
-const tagsOptions = ref<string[]>([]);
+const spaceOptions = ref<string[]>([]);
 const activeMsgId = ref<string | null>(null);
 const activeController = ref<AbortController | null>(null);
 
 onMounted(async () => {
     try {
-        tagsOptions.value = await getAllTags();
+        spaceOptions.value = await listAccessibleSpaces();
     } catch (e) { console.error(e) }
 });
 
@@ -497,7 +498,7 @@ const submitChat = async (userInput: string, options?: { clearInput?: boolean; f
       apiUrl(`/api/v1/chat?conversationId=${encodeURIComponent(conversationId.value)}`),
       {
         userInput: trimmedInput,
-        tags: selectedTag.value ? [selectedTag.value] : [],
+        spaceCodes: selectedSpaces.value,
         modelId: selectedModel.value,
         mode: selectedMode.value,
         msgId,

@@ -6,6 +6,8 @@ export interface User {
   id: string;
   username: string;
   role: UserRole;
+  deptId?: string | null;
+  deptName?: string | null;
   enabled: boolean;
 }
 
@@ -13,6 +15,8 @@ export interface CreateUserRequest {
   username: string;
   password: string;
   role: UserRole;
+  deptId?: string;
+  deptName?: string;
 }
 
 interface ApiEnvelope<T> {
@@ -80,6 +84,17 @@ export const resetUserPassword = async (id: string | number, newPassword: string
       "Content-Type": "application/json"
     },
     body: JSON.stringify({ password: newPassword })
+  });
+  return await parseEnvelope<void>(res);
+};
+
+export const updateUserDepartment = async (id: string | number, payload: { deptId?: string; deptName?: string }) => {
+  const res = await authFetch(apiUrl(`${USERS_BASE}/${encodeURIComponent(String(id))}/department`), {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
   });
   return await parseEnvelope<void>(res);
 };

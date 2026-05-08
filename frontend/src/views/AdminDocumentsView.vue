@@ -16,6 +16,7 @@
     <!-- Toolbar -->
     <div class="toolbar">
       <el-button type="primary" :icon="Plus" @click="openUploadDialog">{{ t("common.upload") }}</el-button>
+      <el-button @click="handleBackfillAcl">{{ t("docs.backfillAcl") }}</el-button>
       <el-button type="danger" :icon="Delete" :disabled="selectedIds.length === 0" @click="handleBatchDelete">
         {{ t("docs.batchDelete") }}
       </el-button>
@@ -41,9 +42,28 @@
             <el-tag :type="getStatusType(row.status)">{{ getStatusLabel(row.status) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="createDate" :label="t('common.createdAt')" width="180" />
-      <el-table-column :label="t('common.actions')" width="100" fixed="right">
+      <el-table-column prop="spaceCode" :label="t('docs.space')" width="120">
         <template #default="{ row }">
+          {{ row.spaceCode || t("docs.publicSpace") }}
+        </template>
+      </el-table-column>
+      <el-table-column prop="ownerDeptId" :label="t('docs.ownerDept')" width="140">
+        <template #default="{ row }">
+          {{ row.ownerDeptId || "-" }}
+        </template>
+      </el-table-column>
+      <el-table-column prop="isPublic" :label="t('docs.visibility')" width="110">
+        <template #default="{ row }">
+          <el-tag :type="row.isPublic ? 'success' : 'warning'">
+            {{ row.isPublic ? t("docs.visibilityPublic") : t("docs.visibilityRestricted") }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column prop="createDate" :label="t('common.createdAt')" width="180" />
+      <el-table-column :label="t('common.actions')" width="220" fixed="right">
+        <template #default="{ row }">
+          <el-button link type="primary" size="small" @click="handleDownload(row)">{{ t("common.download") }}</el-button>
+          <el-button link type="primary" size="small" @click="openPermissionDialog(row)">{{ t("common.edit") }}</el-button>
           <el-button link type="danger" size="small" @click="handleDelete(row)">{{ t("common.delete") }}</el-button>
         </template>
       </el-table-column>
@@ -129,6 +149,33 @@
           <div v-for="(log, idx) in uploadLogs" :key="idx" :class="log.type">{{ log.msg }}</div>
       </div>
     </el-dialog>
+
+    <el-dialog v-model="permissionDialogVisible" :title="t('docs.editPermissions')" width="520px" destroy-on-close>
+      <el-form :model="permissionForm" label-width="120px">
+        <el-form-item :label="t('docs.space')">
+          <el-input v-model="permissionForm.spaceCode" :placeholder="t('docs.publicSpace')" />
+        </el-form-item>
+        <el-form-item :label="t('docs.ownerDept')">
+          <el-input v-model="permissionForm.ownerDeptId" :placeholder="t('users.enterDeptId')" />
+        </el-form-item>
+        <el-form-item :label="t('docs.allowedRoles')">
+          <el-select v-model="permissionForm.allowedRoles" multiple allow-create filterable default-first-option>
+            <el-option label="USER" value="USER" />
+            <el-option label="ADMIN" value="ADMIN" />
+          </el-select>
+        </el-form-item>
+        <el-form-item :label="t('docs.allowedDeptIds')">
+          <el-input v-model="permissionDeptIdsInput" :placeholder="t('docs.commaDeptExample')" />
+        </el-form-item>
+        <el-form-item :label="t('docs.publicAccess')">
+          <el-switch v-model="permissionForm.isPublic" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="permissionDialogVisible = false">{{ t("common.cancel") }}</el-button>
+        <el-button type="primary" :loading="permissionSubmitting" @click="submitPermissions">{{ t("common.confirm") }}</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -136,7 +183,18 @@
 import { ref, onMounted, onUnmounted, reactive } from "vue";
 import { Search, Refresh, Plus, Delete } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { listDocs, deleteDoc, deleteDocsBatch, uploadSingle, uploadBatch, getAllTags, type Doc } from "../api/docs";
+import {
+  listDocs,
+  deleteDoc,
+  deleteDocsBatch,
+  downloadDoc,
+  uploadSingle,
+  uploadBatch,
+  getAllTags,
+  updateDocPermissions,
+  backfillAclMetadata,
+  type Doc
+} from "../api/docs";
 import { connectSse, disconnectSse, type EtlMessage } from "../api/sse-fetch";
 import { useI18n } from "vue-i18n";
 
@@ -145,6 +203,7 @@ const { t, te } = useI18n();
 // --- State ---
 const loading = ref(false);
 const tableData = ref<Doc[]>([]);
+let statusPollingTimer: ReturnType<typeof window.setInterval> | null = null;
 const selectedIds = ref<string[]>([]);
 const pagination = reactive({
   current: 1,
@@ -169,10 +228,22 @@ const singleFile = ref<File | null>(null);
 const batchFiles = ref<File[]>([]);
 const folderFiles = ref<File[]>([]);
 const uploadLogs = ref<{type: string, msg: string}[]>([]);
+const permissionDialogVisible = ref(false);
+const permissionSubmitting = ref(false);
+const editingDocId = ref("");
+const permissionDeptIdsInput = ref("");
+const permissionForm = reactive({
+  spaceCode: "public",
+  ownerDeptId: "",
+  allowedRoles: [] as string[],
+  allowedDeptIds: [] as string[],
+  isPublic: true
+});
 
 // --- Lifecycle ---
 onMounted(async () => {
   await Promise.all([loadData(), loadTags()]);
+  startStatusPolling();
   // Connect SSE
   connectSse((msg: EtlMessage) => {
       // Find row
@@ -184,12 +255,15 @@ onMounted(async () => {
               // Maybe reload to get updated metadata if needed?
               // For now, just status update is enough.
           }
+      } else {
+          loadData(false);
       }
   });
 });
 
 onUnmounted(() => {
     disconnectSse();
+    stopStatusPolling();
 });
 
 const loadTags = async () => {
@@ -201,8 +275,10 @@ const loadTags = async () => {
 };
 
 // --- Methods ---
-const loadData = async () => {
-  loading.value = true;
+const loadData = async (showLoading = true) => {
+  if (showLoading) {
+    loading.value = true;
+  }
   try {
     const res = await listDocs(pagination.current, pagination.size, query.keyword);
     tableData.value = res.records;
@@ -210,7 +286,29 @@ const loadData = async () => {
   } catch (e: any) {
     ElMessage.error(e.message || t("docs.loadFailed"));
   } finally {
-    loading.value = false;
+    if (showLoading) {
+      loading.value = false;
+    }
+  }
+};
+
+const processingStatuses = new Set(["UPLOADED", "READING", "SPLITTING", "VECTORIZING"]);
+
+const hasProcessingDocs = () => tableData.value.some(doc => processingStatuses.has(doc.status));
+
+const startStatusPolling = () => {
+  stopStatusPolling();
+  statusPollingTimer = window.setInterval(() => {
+    if (!loading.value && hasProcessingDocs()) {
+      loadData(false);
+    }
+  }, 3000);
+};
+
+const stopStatusPolling = () => {
+  if (statusPollingTimer !== null) {
+    window.clearInterval(statusPollingTimer);
+    statusPollingTimer = null;
   }
 };
 
@@ -226,6 +324,14 @@ const resetSearch = () => {
 
 const handleSelectionChange = (selection: Doc[]) => {
   selectedIds.value = selection.map(item => item.id);
+};
+
+const handleDownload = async (row: Doc) => {
+  try {
+    await downloadDoc(row);
+  } catch (e: any) {
+    ElMessage.error(e.message || t("docs.downloadFailed"));
+  }
 };
 
 const handleDelete = async (row: Doc) => {
@@ -252,6 +358,55 @@ const handleBatchDelete = async () => {
     } catch (e) {
      if(e !== 'cancel') ElMessage.error(t("docs.batchDeleteFailed"));
     }
+};
+
+const openPermissionDialog = (row: Doc) => {
+  editingDocId.value = row.id;
+  permissionForm.spaceCode = row.spaceCode || "public";
+  permissionForm.ownerDeptId = row.ownerDeptId || "";
+  permissionForm.allowedRoles = [...(row.allowedRoles || [])];
+  permissionForm.allowedDeptIds = [...(row.allowedDeptIds || [])];
+  permissionForm.isPublic = !!row.isPublic;
+  permissionDeptIdsInput.value = (row.allowedDeptIds || []).join(",");
+  permissionDialogVisible.value = true;
+};
+
+const parseCommaSeparated = (value: string) => {
+  return value
+    .split(",")
+    .map(item => item.trim())
+    .filter(Boolean);
+};
+
+const submitPermissions = async () => {
+  if (!editingDocId.value) return;
+  permissionSubmitting.value = true;
+  try {
+    permissionForm.allowedDeptIds = parseCommaSeparated(permissionDeptIdsInput.value);
+    await updateDocPermissions(editingDocId.value, {
+      spaceCode: permissionForm.spaceCode || "public",
+      ownerDeptId: permissionForm.ownerDeptId || null,
+      allowedRoles: permissionForm.allowedRoles,
+      allowedDeptIds: permissionForm.allowedDeptIds,
+      isPublic: permissionForm.isPublic
+    });
+    ElMessage.success(t("docs.updatePermissionsSuccess"));
+    permissionDialogVisible.value = false;
+    loadData();
+  } catch (e: any) {
+    ElMessage.error(e.message || t("docs.updatePermissionsFailed"));
+  } finally {
+    permissionSubmitting.value = false;
+  }
+};
+
+const handleBackfillAcl = async () => {
+  try {
+    const count = await backfillAclMetadata();
+    ElMessage.success(t("docs.aclBackfillSuccess", { count }));
+  } catch (e: any) {
+    ElMessage.error(e.message || t("docs.aclBackfillFailed"));
+  }
 };
 
 const getStatusLabel = (status: string) => {

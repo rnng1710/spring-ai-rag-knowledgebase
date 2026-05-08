@@ -36,4 +36,6 @@ public interface SysUserService {
     void resetPassword(String id, String newPassword);
 
     void updateUserRole(String id, String role);
+
+    void updateUserDepartment(String id, String deptId, String deptName);
 }

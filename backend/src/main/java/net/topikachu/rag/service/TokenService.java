@@ -8,6 +8,7 @@ import com.nimbusds.jose.crypto.MACSigner;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import lombok.extern.slf4j.Slf4j;
+import net.topikachu.rag.entity.SysUser;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -30,7 +31,22 @@ public class TokenService {
     @Value("${security.jwt.refresh-expiration:86400000}")
     private long refreshTokenValidityMillis;
 
+    public Map<String, String> generateTokens(SysUser user) {
+        if (user == null) {
+            throw new IllegalArgumentException("User is required");
+        }
+        return generateTokens(
+                user.getUsername(),
+                user.getRole(),
+                user.getDeptId(),
+                user.getDeptName());
+    }
+
     public Map<String, String> generateTokens(String username, String role) {
+        return generateTokens(username, role, null, null);
+    }
+
+    public Map<String, String> generateTokens(String username, String role, String deptId, String deptName) {
         try {
             JWSSigner signer = new MACSigner(secret.getBytes());
 
@@ -41,6 +57,8 @@ public class TokenService {
                     .issueTime(new Date())
                     .expirationTime(Date.from(Instant.now().plus(accessTokenValidityMillis, ChronoUnit.MILLIS)))
                     .claim("roles", List.of(role))
+                    .claim("deptId", deptId)
+                    .claim("deptName", deptName)
                     .build();
 
             SignedJWT signedAccess = new SignedJWT(new JWSHeader(JWSAlgorithm.HS256), accessClaims);

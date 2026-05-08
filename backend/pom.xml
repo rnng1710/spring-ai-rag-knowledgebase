@@ -177,6 +177,11 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webflux</artifactId>
         </dependency>
+        <dependency>
+            <groupId>io.minio</groupId>
+            <artifactId>minio</artifactId>
+            <version>8.5.17</version>
+        </dependency>
     </dependencies>
     <dependencyManagement>
         <dependencies>

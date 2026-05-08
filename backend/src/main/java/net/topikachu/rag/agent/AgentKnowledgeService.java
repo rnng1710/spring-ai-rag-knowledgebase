@@ -1,6 +1,8 @@
 package net.topikachu.rag.agent;
 
 import lombok.extern.slf4j.Slf4j;
+import net.topikachu.rag.auth.CurrentUserContext;
+import net.topikachu.rag.auth.SearchScope;
 import net.topikachu.rag.business.document.service.DocumentService;
 import net.topikachu.rag.service.chat.HybridSearchService;
 import net.topikachu.rag.service.chat.RerankService;
@@ -34,9 +36,12 @@ public class AgentKnowledgeService {
         this.documentService = documentService;
     }
 
-    public Mono<List<Document>> searchKnowledgeSnippets(String query, List<String> tagsAnyOf, Integer topK) {
+    public Mono<List<Document>> searchKnowledgeSnippets(String query,
+                                                        CurrentUserContext currentUserContext,
+                                                        SearchScope searchScope,
+                                                        Integer topK) {
         int effectiveTopK = (topK == null || topK <= 0) ? rerankTopK : topK;
-        return hybridSearchService.hybridSearch(query, tagsAnyOf, hybridTopK)
+        return hybridSearchService.hybridSearch(query, currentUserContext, searchScope, hybridTopK)
                 .flatMap(candidates -> {
                     if (candidates == null || candidates.isEmpty()) {
                         return Mono.just(Collections.emptyList());
@@ -49,7 +54,10 @@ public class AgentKnowledgeService {
                 });
     }
 
-    public Mono<List<String>> listAvailableTags() {
-        return documentService.getAllTags();
+    public Mono<List<String>> listAvailableTags(CurrentUserContext currentUserContext, SearchScope searchScope) {
+        SearchScope tagListingScope = searchScope == null
+                ? SearchScope.empty()
+                : new SearchScope(searchScope.requestedSpaceCodes(), List.of());
+        return documentService.getAccessibleTags(currentUserContext, tagListingScope);
     }
 }
