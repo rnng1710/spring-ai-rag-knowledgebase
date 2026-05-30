@@ -38,4 +38,6 @@ public interface SysUserService {
     void updateUserRole(String id, String role);
 
     void updateUserDepartment(String id, String deptId, String deptName);
+
+    void updateDefaultSpace(String id, String defaultSpaceCode);
 }

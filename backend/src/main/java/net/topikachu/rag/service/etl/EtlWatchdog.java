@@ -5,7 +5,12 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import net.topikachu.rag.business.document.entity.Document;
 import net.topikachu.rag.business.document.entity.DocumentStatus;
+import net.topikachu.rag.business.document.entity.EtlJob;
+import net.topikachu.rag.business.document.entity.EtlJobStatus;
 import net.topikachu.rag.business.document.mapper.DocumentMapper;
+import net.topikachu.rag.business.document.mapper.EtlJobMapper;
+import net.topikachu.rag.business.document.service.EtlJobService;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -18,19 +23,41 @@ import java.util.List;
 public class EtlWatchdog {
 
     private final DocumentMapper documentMapper;
-    private final HybridVectorWriter hybridVectorWriter;
-    private final EtlJobStarter etlJobStarter;
+    private final EtlJobMapper etlJobMapper;
+    private final EtlJobService etlJobService;
+    private final EtlStatusManager etlStatusManager;
+
+    @Value("${rag.etl.watchdog.document-timeout-minutes:360}")
+    private int documentTimeoutMinutes;
 
     /**
-     * Watchdog task to clean up stuck ETL processes.
+     * Two-layer watchdog for ETL recovery.
      * Runs every 5 minutes.
-     * Checks for documents in intermediate states that haven't been updated for 15
-     * minutes.
+     *
+     * Primary layer: expire RUNNING jobs whose worker leases have lapsed. The job
+     * retry loop owns requeueing, so this path must not delete vectors.
+     *
+     * Secondary layer: after a much wider timeout, mark dirty document rows failed
+     * only when no active PENDING/RUNNING job remains for that document. Vector
+     * cleanup is reserved for this document-level fallback.
      */
     @Scheduled(cron = "0 0/5 * * * ?")
     public void cleanupStuckDocuments() {
-        log.info("Dogwatch scan in progress...");
-        LocalDateTime timeoutThreshold = LocalDateTime.now().minusMinutes(15);
+        LocalDateTime now = LocalDateTime.now();
+
+        try {
+            int expiredJobs = etlJobService.markExpiredRunningLeasesFailedSync(
+                    now,
+                    "System Watchdog: worker lease expired; scheduled for retry.",
+                    null);
+            if (expiredJobs > 0) {
+                log.warn("Watchdog marked {} expired ETL jobs as FAILED for retry", expiredJobs);
+            }
+        } catch (Exception e) {
+            log.error("Watchdog failed to expire RUNNING ETL jobs", e);
+        }
+
+        LocalDateTime timeoutThreshold = now.minusMinutes(documentTimeoutMinutes);
 
         List<Document> stuckDocs = documentMapper.selectList(Wrappers.<Document>lambdaQuery()
                 .in(Document::getStatus,
@@ -44,28 +71,35 @@ public class EtlWatchdog {
             return;
         }
 
-        log.info("Watchdog detected {} stuck documents...", stuckDocs.size());
+        log.info("Watchdog detected {} document rows beyond fallback timeout", stuckDocs.size());
 
         for (Document doc : stuckDocs) {
             try {
-                // 1. Mark as FAILED in DB
-                int rows = documentMapper.update(null, Wrappers.<Document>lambdaUpdate()
-                        .set(Document::getStatus, DocumentStatus.FAILED.name())
-                        .set(Document::getErrorMessage, "System Watchdog: Process timeout (15min). Please retry.")
-                        .set(Document::getUpdateDate, LocalDateTime.now())
-                        .eq(Document::getDocUuid, doc.getDocUuid())
-                        // CAS safety: only update if it's still in the stuck state we queried
-                        .eq(Document::getStatus, doc.getStatus()));
+                if (hasActiveJob(doc.getDocUuid())) {
+                    log.debug("Skip document fallback because ETL job is still active: docUuid={}", doc.getDocUuid());
+                    continue;
+                }
 
-                if (rows > 0) {
-                    log.warn("Watchdog marked document {} as FAILED", doc.getDocUuid());
-                    etlJobStarter.start(
-                            hybridVectorWriter.deleteByDocUuid(doc.getDocUuid()),
-                            "Watchdog cleanup " + doc.getDocUuid());
+                String errorMsg = "System Watchdog: document state timeout after "
+                        + documentTimeoutMinutes + " minutes without an active ETL job. Please retry.";
+                boolean applied = etlStatusManager.transitionToFailedSync(
+                        doc.getDocUuid(), null,
+                        new RuntimeException(errorMsg));
+                if (applied) {
+                    log.warn("Watchdog marked orphaned document {} as FAILED", doc.getDocUuid());
                 }
             } catch (Exception e) {
-                log.error("Watchdog failed to process stuck document {}", doc.getDocUuid(), e);
+                log.error("Watchdog failed to process document fallback {}", doc.getDocUuid(), e);
             }
         }
+    }
+
+    private boolean hasActiveJob(String docUuid) {
+        Long count = etlJobMapper.selectCount(Wrappers.<EtlJob>lambdaQuery()
+                .eq(EtlJob::getDocUuid, docUuid)
+                .in(EtlJob::getStatus, List.of(
+                        EtlJobStatus.PENDING.name(),
+                        EtlJobStatus.RUNNING.name())));
+        return count != null && count > 0;
     }
 }

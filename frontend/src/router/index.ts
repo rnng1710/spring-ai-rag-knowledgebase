@@ -9,6 +9,7 @@ import { AppRole, clearAuthSession, getAccessToken, getRoleFromAccessToken, getU
 import { ensureValidAccessToken } from "../api/client";
 
 import UserManagement from "../views/admin/UserManagement.vue";
+import AdminEvaluationView from "../views/admin/AdminEvaluationView.vue";
 
 interface AppRouteMeta {
   role?: AppRole;
@@ -29,7 +30,8 @@ const router = createRouter({
         { path: "index", component: AdminIndexView },
         { path: "documents", component: AdminDocumentsView },
         { path: "users", component: UserManagement },
-        { path: "status", component: AdminStatusView }
+        { path: "status", component: AdminStatusView },
+        { path: "evaluation", component: AdminEvaluationView }
       ]
     }
   ]

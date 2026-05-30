@@ -1,7 +1,7 @@
 @import url("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap");
 
 :root {
-  color-scheme: light;
+  /* Global Colors */
   --bg: #f4f6fb;
   --card: #ffffff;
   --text: #1d1e20;
@@ -10,6 +10,97 @@
   --border: #e6e8ef;
   --ink: #0f172a;
   --glow: rgba(32, 87, 255, 0.22);
+  --body-bg: radial-gradient(circle at 15% 20%, #eef3ff, #f6f7fb 50%, #f1f3f9 100%);
+  --chat-shell-bg: #f7f8fb;
+
+  /* Evaluation page */
+  --eval-success: #10b981;
+  --eval-warning: #f59e0b;
+  --eval-danger: #ef4444;
+  --eval-red: #ef4444;
+  --eval-orange: #f97316;
+  --eval-blue: #3b82f6;
+  --eval-purple: #8b5cf6;
+  --eval-cyan: #06b6d4;
+  --eval-slate: #64748b;
+
+  /* Chat Colors */
+  --chat-sidebar-bg: #f0f4f9;
+  --chat-sidebar-border: #e6e8f0;
+  --chat-action-bg: #dde3ea;
+  --chat-action-hover: #cdd6e0;
+  --chat-text-primary: #1f1f1f;
+  --chat-text-secondary: #444746;
+  --chat-thread-bg: #ffffff;
+  --chat-input-bg: #f0f4f9;
+  --chat-input-focus: #e9eef6;
+  --chat-user-bubble: #f0f4f9;
+  --chat-agent-bubble: transparent;
+  --chat-pill-bg: #e8f0fe;
+  --chat-pill-text: #1a73e8;
+  --chat-revised-bg: #eef7e8;
+  --chat-revised-text: #3b7a1c;
+  --chat-trace-bg: #f8fafc;
+  --chat-trace-border: #e5eaf3;
+
+  /* Element Plus Overrides */
+  --el-color-primary: var(--accent);
+
+  /* Login Colors */
+  --login-bg-overlay: linear-gradient(rgba(243, 246, 255, 0.55), rgba(238, 241, 248, 0.65));
+  --login-card-bg: rgba(255, 255, 255, 0.82);
+  --login-card-border: rgba(255, 255, 255, 0.7);
+  --login-mark-gradient: linear-gradient(135deg, #111827 0%, #334155 55%, #2563eb 100%);
+}
+
+html.dark {
+    --bg: #121212;
+    --card: #1e1e20;
+    --text: #e5e7eb;
+    --muted: #9ca3af;
+    --accent: #3b82f6;
+    --border: #374151;
+    --ink: #f9fafb;
+    --glow: rgba(59, 130, 246, 0.22);
+    --body-bg: #121212;
+    --chat-shell-bg: #000000;
+
+    --chat-sidebar-bg: #1e1e20;
+    --chat-sidebar-border: #333333;
+    --chat-action-bg: #2d2d30;
+    --chat-action-hover: #3d3d40;
+    --chat-text-primary: #f3f4f6;
+    --chat-text-secondary: #9ca3af;
+    --chat-thread-bg: #121212;
+    --chat-input-bg: #1e1e20;
+    --chat-input-focus: #2d2d30;
+    --chat-user-bubble: #1e1e20;
+    --chat-agent-bubble: transparent;
+    --chat-pill-bg: #1e3a8a;
+    --chat-pill-text: #93c5fd;
+    --chat-revised-bg: #14532d;
+    --chat-revised-text: #86efac;
+    --chat-trace-bg: #1e1e20;
+    --chat-trace-border: #374151;
+
+    /* Element Plus Dark Mode Overrides */
+    --el-bg-color: var(--chat-input-bg);
+    --el-bg-color-overlay: var(--chat-sidebar-bg);
+    --el-text-color-primary: var(--chat-text-primary);
+    --el-text-color-regular: var(--chat-text-secondary);
+    --el-border-color: var(--chat-sidebar-border);
+    --el-border-color-light: var(--chat-sidebar-border);
+    --el-fill-color-blank: #1e1e20;
+    --el-fill-color-light: #2d2d30;
+    --el-input-bg-color: #1e1e20;
+    --el-input-border-color: #374151;
+    --el-input-text-color: #f3f4f6;
+
+    /* Login Colors */
+    --login-bg-overlay: linear-gradient(rgba(10, 10, 12, 0.75), rgba(5, 5, 8, 0.85));
+    --login-card-bg: rgba(30, 30, 32, 0.82);
+    --login-card-border: rgba(50, 50, 55, 0.7);
+    --login-mark-gradient: linear-gradient(135deg, #f9fafb 0%, #9ca3af 55%, #3b82f6 100%);
 }
 
 * {
@@ -20,7 +111,7 @@ body {
   margin: 0;
   font-family: "Plus Jakarta Sans", "Segoe UI", sans-serif;
   color: var(--text);
-  background: radial-gradient(circle at 15% 20%, #eef3ff, #f6f7fb 50%, #f1f3f9 100%);
+  background: var(--body-bg);
 }
 
 #app {
@@ -88,7 +179,7 @@ body {
   border: 1px dashed var(--border);
   border-radius: 12px;
   padding: 12px;
-  background: #fafbff;
+  background: var(--chat-trace-bg, #fafbff);
   font-family: "Courier New", Courier, monospace;
   white-space: pre-wrap;
 }
@@ -105,16 +196,17 @@ body {
 }
 
 .chat-shell {
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   display: grid;
   grid-template-columns: minmax(240px, 300px) 1fr;
-  background: #f7f8fb;
+  background: var(--chat-shell-bg);
 }
 
 .chat-sidebar {
   padding: 24px 20px;
-  border-right: 1px solid #e6e8f0;
-  background: #f1f3f8;
+  border-right: 1px solid var(--chat-sidebar-border);
+  background: var(--chat-sidebar-bg);
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -172,10 +264,13 @@ body {
 }
 
 .chat-main {
-  display: grid;
-  grid-template-rows: auto 1fr auto;
-  padding: 28px 32px;
-  gap: 20px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  background-color: var(--chat-thread-bg);
+  height: 100vh;
+  overflow: hidden;
 }
 
 .chat-header {
@@ -196,11 +291,11 @@ body {
 }
 
 .chat-thread {
-  background: #ffffff;
-  border: 1px solid #e6e8f0;
+  background: var(--chat-thread-bg, #ffffff);
+  border: 1px solid var(--chat-sidebar-border, #e6e8f0);
   border-radius: 18px;
   padding: 24px;
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.06);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -262,15 +357,15 @@ body {
   place-items: center;
   padding: 40px 20px;
   background:
-    linear-gradient(rgba(243, 246, 255, 0.55), rgba(238, 241, 248, 0.65)),
+    var(--login-bg-overlay),
     url("../assets/login-bg.png") center / cover no-repeat;
 }
 
 .login-card {
   position: relative;
   width: min(440px, 100%);
-  background: rgba(255, 255, 255, 0.82);
-  border: 1px solid rgba(255, 255, 255, 0.7);
+  background: var(--login-card-bg);
+  border: 1px solid var(--login-card-border);
   border-radius: 22px;
   padding: 28px;
   box-shadow: 0 24px 60px rgba(15, 23, 42, 0.12), 0 2px 12px rgba(15, 23, 42, 0.08);
@@ -305,7 +400,7 @@ body {
   width: 44px;
   height: 44px;
   border-radius: 14px;
-  background: linear-gradient(135deg, #111827 0%, #334155 55%, #2563eb 100%);
+  background: var(--login-mark-gradient);
   box-shadow: 0 10px 24px var(--glow);
 }
 

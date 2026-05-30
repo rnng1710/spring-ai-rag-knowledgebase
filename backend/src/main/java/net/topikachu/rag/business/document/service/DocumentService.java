@@ -28,9 +28,13 @@ public interface DocumentService {
 
     Mono<DownloadedDocument> downloadDocumentById(String id);
 
+    Mono<DownloadedDocument> previewDocumentByDocUuid(String docUuid, CurrentUserContext currentUserContext);
+
     Mono<List<String>> getAccessibleTags(CurrentUserContext currentUserContext, SearchScope searchScope);
 
     Mono<List<String>> getAccessibleSpaceCodes(CurrentUserContext currentUserContext);
+
+    Mono<SearchScope> resolveEffectiveSearchScope(CurrentUserContext currentUserContext, SearchScope requestedScope);
 
     Mono<Void> retryIngestion(String id, String userId);
 

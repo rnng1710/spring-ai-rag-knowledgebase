@@ -147,6 +147,34 @@ export const listAccessibleSpaces = async () => {
     return [];
 };
 
+export const previewDocUrl = (docUuid: string, pageNumber?: unknown) => {
+    const url = apiUrl(`/api/v1/docs/by-uuid/${encodeURIComponent(docUuid)}/preview`);
+    if (pageNumber === undefined || pageNumber === null || pageNumber === "") {
+        return url;
+    }
+    return `${url}#page=${encodeURIComponent(String(pageNumber))}`;
+};
+
+export const openDocPreview = async (docUuid: string, pageNumber?: unknown) => {
+    const previewWindow = window.open("about:blank", "_blank");
+    const res = await authFetch(apiUrl(`/api/v1/docs/by-uuid/${encodeURIComponent(docUuid)}/preview`));
+    if (!res.ok) {
+        previewWindow?.close();
+        throw new Error(`Preview failed: ${res.status}`);
+    }
+    const blob = await res.blob();
+    const blobUrl = window.URL.createObjectURL(blob);
+    const targetUrl = pageNumber === undefined || pageNumber === null || pageNumber === ""
+        ? blobUrl
+        : `${blobUrl}#page=${encodeURIComponent(String(pageNumber))}`;
+    if (previewWindow) {
+        previewWindow.location.href = targetUrl;
+    } else {
+        window.open(targetUrl, "_blank");
+    }
+    setTimeout(() => window.URL.revokeObjectURL(blobUrl), 60_000);
+};
+
 export const updateDocPermissions = async (id: string, payload: DocPermissionPayload) => {
     const res = await authFetch(apiUrl(`/api/v1/docs/${id}/permissions`), {
         method: "PATCH",

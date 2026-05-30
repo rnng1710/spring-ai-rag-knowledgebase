@@ -27,6 +27,7 @@ public class CurrentUserContextService {
                 role,
                 user.getDeptId(),
                 user.getDeptName(),
+                user.getDefaultSpaceCode(),
                 "ADMIN".equalsIgnoreCase(role));
     }
 }

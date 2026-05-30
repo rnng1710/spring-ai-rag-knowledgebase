@@ -5,13 +5,16 @@ import net.topikachu.rag.agent.AgentChatService;
 import net.topikachu.rag.auth.CurrentUserContext;
 import net.topikachu.rag.auth.CurrentUserContextService;
 import net.topikachu.rag.auth.SearchScope;
+import net.topikachu.rag.business.document.service.DocumentService;
 import net.topikachu.rag.observability.TracingSupport;
 import net.topikachu.rag.service.chat.ChatService;
+import net.topikachu.rag.service.chat.SourceValidationException;
 import net.topikachu.rag.service.etl.EtlPipeline;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -38,6 +41,7 @@ public class RestApi {
 	private final AgentChatService agentChatService;
 	private final TracingSupport tracingSupport;
 	private final CurrentUserContextService currentUserContextService;
+	private final DocumentService documentService;
 
 	private final EtlPipeline etlPipeline;
 
@@ -58,52 +62,52 @@ public class RestApi {
 		return principalMono.flatMapMany(principal -> {
 			CurrentUserContext currentUserContext = currentUserContextService.resolveByUsername(principal.getName());
 			var conversationKey = String.format("%s:%s", principal.getName(), conversationId);
-			SearchScope searchScope = new SearchScope(chatRequest.spaceCodes(), chatRequest.tags());
+			SearchScope requestedScope = new SearchScope(chatRequest.spaceCodes(), chatRequest.tags());
 
-			String mode = chatRequest.mode();
-			if (!StringUtils.hasText(mode)) {
-				mode = agentDefaultMode;
-			}
+			String requestedMode = chatRequest.mode();
+			String mode = StringUtils.hasText(requestedMode) ? requestedMode : agentDefaultMode;
 
 			boolean useAgent = agentEnabled && "agent".equalsIgnoreCase(mode);
 			String msgId = StringUtils.hasText(chatRequest.msgId()) ? chatRequest.msgId() : ("msg-" + System.currentTimeMillis());
-			tagCurrentChatTrace(principal.getName(), conversationId, conversationKey, mode, chatRequest.modelId(),
-					locustRunId, questionId, questionBucket, searchScope);
+			return documentService.resolveEffectiveSearchScope(currentUserContext, requestedScope)
+					.flatMapMany(searchScope -> {
+						tagCurrentChatTrace(principal.getName(), conversationId, conversationKey, mode, chatRequest.modelId(),
+								locustRunId, questionId, questionBucket, searchScope);
 
-			if (!agentEnabled && "agent".equalsIgnoreCase(mode)) {
-				log.warn("Agent mode requested while disabled. conversationId={}, user={}", conversationId, principal.getName());
-				return Flux.just(
-						ServerSentEvent.builder()
-								.event("error")
-								.data((Object) Map.of(
-										"msgId", msgId,
-										"message", "当前系统未启用 Agent 模式，请切换到快速模式后重试。"))
-								.build(),
-						ServerSentEvent.builder()
-								.event("done")
-								.data((Object) Map.of("msgId", msgId))
-								.build());
-			}
+						if (!agentEnabled && "agent".equalsIgnoreCase(mode)) {
+							log.warn("Agent mode requested while disabled. conversationId={}, user={}", conversationId, principal.getName());
+							return Flux.just(errorEvent(msgId, "当前系统未启用 Agent 模式，请切换到快速模式后重试。"),
+									doneEvent(msgId));
+						}
 
-			if (useAgent) {
-				return agentChatService.streamEvents(
-						chatRequest.userInput(),
-						conversationKey,
-						currentUserContext,
-						searchScope,
-						chatRequest.modelId(),
-						msgId);
-			}
+						if (useAgent) {
+							return agentChatService.streamEvents(
+									chatRequest.userInput(),
+									conversationKey,
+									currentUserContext,
+									searchScope,
+									chatRequest.modelId(),
+									msgId);
+						}
 
-			return chatService.streamWithSources(
-							chatRequest.userInput(),
-							conversationKey,
-							currentUserContext,
-							searchScope,
-							chatRequest.modelId())
+						return chatService.streamWithSources(
+										chatRequest.userInput(),
+										conversationKey,
+										currentUserContext,
+										searchScope,
+										chatRequest.modelId(),
+										msgId)
 					.flatMapMany(response -> {
-						List<Map<String, Object>> sourceMetadata = response.sources().stream()
-								.map(doc -> doc.getMetadata())
+						List<Map<String, Object>> sourceMetadata = response.usedSources().stream()
+								.map(source -> {
+									Map<String, Object> item = new LinkedHashMap<>();
+									item.put("evidenceId", source.evidenceId());
+									item.put("doc_uuid", source.docUuid());
+									item.put("file_name", source.fileName());
+									item.put("page_number", source.pageNumber());
+									item.put("file_type", source.fileType());
+									return item;
+								})
 								.collect(Collectors.toList());
 
 						ServerSentEvent<Object> sourceEvent = ServerSentEvent.builder()
@@ -117,35 +121,33 @@ public class RestApi {
 										.data((Object) content)
 										.build());
 
-						ServerSentEvent<Object> doneEvent = ServerSentEvent.builder()
-								.event("done")
-								.data((Object) Map.of("msgId", msgId))
-								.build();
-
-						return Flux.concat(Flux.just(sourceEvent), messageStream, Flux.just(doneEvent));
+						return Flux.concat(Flux.just(sourceEvent), messageStream, Flux.just(doneEvent(msgId)));
 					})
 					.onErrorResume(exp -> {
-						log.error("Error in chat", exp);
 						String message = "系统繁忙，请稍后重试。";
 						if (exp instanceof net.topikachu.rag.service.chat.RetrievalException retrievalException) {
 							message = retrievalException.getUserMessage();
+						} else if (exp instanceof SourceValidationException sourceValidationException) {
+							message = sourceValidationException.getUserMessage();
+						} else if (exp instanceof ResourceAccessException) {
+							message = "模型服务响应超时，请稍后重试或切换模型。";
 						}
-						ServerSentEvent<Object> errorEvent = ServerSentEvent.builder()
-								.event("error")
-								.data((Object) Map.of(
-										"msgId", msgId,
-										"message", message))
-								.build();
+						if (exp instanceof SourceValidationException
+								|| exp instanceof net.topikachu.rag.service.chat.RetrievalException) {
+							log.warn("Chat request failed with user-facing error: {}", message);
+						} else {
+							log.error("Error in chat", exp);
+						}
 						ServerSentEvent<Object> fallbackEvent = ServerSentEvent.builder()
 								.event("message")
 								.data((Object) message)
 								.build();
-						ServerSentEvent<Object> doneEvent = ServerSentEvent.builder()
-								.event("done")
-								.data((Object) Map.of("msgId", msgId))
-								.build();
-						return Flux.just(errorEvent, fallbackEvent, doneEvent);
+						return Flux.just(errorEvent(msgId, message), fallbackEvent, doneEvent(msgId));
 					});
+					})
+					.onErrorResume(exp -> Flux.just(
+							errorEvent(msgId, exp.getMessage() == null ? "请先选择知识空间。" : exp.getMessage()),
+							doneEvent(msgId)));
 		});
 	}
 
@@ -158,6 +160,20 @@ public class RestApi {
 
 	record ChatRequest(String userInput, List<String> tags, List<String> spaceCodes, String modelId, String mode,
 			String msgId) implements Serializable {
+	}
+
+	private ServerSentEvent<Object> errorEvent(String msgId, String message) {
+		return ServerSentEvent.builder()
+				.event("error")
+				.data((Object) Map.of("msgId", msgId, "message", message))
+				.build();
+	}
+
+	private ServerSentEvent<Object> doneEvent(String msgId) {
+		return ServerSentEvent.builder()
+				.event("done")
+				.data((Object) Map.of("msgId", msgId))
+				.build();
 	}
 
 	private void tagCurrentChatTrace(String username,

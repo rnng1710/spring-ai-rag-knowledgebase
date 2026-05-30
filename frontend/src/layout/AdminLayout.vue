@@ -1,6 +1,6 @@
 <template>
   <el-container class="admin-layout">
-    <el-aside width="240px" class="admin-aside">
+    <el-aside width="280px" class="admin-aside">
       <div class="logo">
         <h2>{{ t("common.appNameShort") }}</h2>
       </div>
@@ -8,9 +8,9 @@
         :default-active="activeMenu"
         class="admin-menu"
         router
-        text-color="#b8b8b8"
-        active-text-color="#fff"
-        background-color="#1e1e1e"
+        text-color="var(--chat-text-secondary)"
+        active-text-color="var(--accent)"
+        background-color="transparent"
       >
         <el-menu-item index="/admin/index">
           <el-icon><Odometer /></el-icon>
@@ -23,6 +23,10 @@
         <el-menu-item index="/admin/users">
           <el-icon><User /></el-icon>
           <span>{{ t("adminLayout.users") }}</span>
+        </el-menu-item>
+        <el-menu-item index="/admin/evaluation">
+          <el-icon><DataAnalysis /></el-icon>
+          <span>{{ t("adminLayout.evaluation") }}</span>
         </el-menu-item>
       </el-menu>
       
@@ -39,6 +43,7 @@
                 <!-- Breadcrumbs could go here -->
             </div>
       <div class="header-right">
+        <ThemeToggle style="margin-right: 16px;" />
         <LanguageSwitcher />
         <el-dropdown trigger="click" @command="handleCommand">
           <span class="el-dropdown-link" style="cursor: pointer; display: flex; align-items: center; margin-left: 12px;">
@@ -63,10 +68,11 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { Odometer, Document, SwitchButton, UserFilled, User } from '@element-plus/icons-vue';
+import { Odometer, Document, SwitchButton, UserFilled, User, DataAnalysis } from '@element-plus/icons-vue';
 import { clearAuthSession, getAccessToken, getUsernameFromAccessToken } from "../utils/auth";
 import { useI18n } from "vue-i18n";
 import LanguageSwitcher from "../components/LanguageSwitcher.vue";
+import ThemeToggle from "../components/ThemeToggle.vue";
 
 const route = useRoute();
 const router = useRouter();
@@ -91,27 +97,28 @@ const handleCommand = (command: string) => {
 .admin-layout {
   height: 100vh;
   width: 100vw;
-  background-color: #f5f7fa;
+  background-color: var(--bg, #f5f7fa);
 }
 
 .admin-aside {
-  background-color: #1e1e1e;
-  color: #fff;
+  background-color: var(--chat-sidebar-bg, #f0f4f9);
+  color: var(--chat-text-primary, #1f1f1f);
   display: flex;
   flex-direction: column;
 }
 
 .logo {
-  height: 60px;
+  height: 72px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-bottom: 1px solid #333;
+  border-bottom: 1px solid var(--border, #333);
 }
 .logo h2 {
-    color: #fff;
+    color: var(--chat-text-primary, #1f1f1f);
     margin: 0;
-    font-size: 18px;
+    font-size: 20px;
+    font-weight: 600;
 }
 
 .admin-menu {
@@ -120,15 +127,24 @@ const handleCommand = (command: string) => {
 }
 
 .admin-menu :deep(.el-menu-item):hover {
-    background-color: #2c2c2c !important;
+    background-color: var(--chat-action-hover) !important;
 }
 .admin-menu :deep(.el-menu-item.is-active) {
-    background-color: #409eff !important;
+    background-color: var(--chat-action-bg) !important;
+    font-weight: 600;
+}
+
+.admin-menu :deep(.el-menu-item) {
+    font-size: 15px;
+    height: 56px;
+    line-height: 56px;
+    margin: 4px 12px;
+    border-radius: 8px;
 }
 
 .aside-footer {
     padding: 20px;
-    border-top: 1px solid #333;
+    border-top: 1px solid var(--border, #333);
     text-align: center;
 }
 .logout-btn {
@@ -139,13 +155,13 @@ const handleCommand = (command: string) => {
 }
 
 .admin-header {
-    background: #fff;
-    border-bottom: 1px solid #e6e6e6;
+    background: var(--card, #fff);
+    border-bottom: 1px solid var(--border, #e6e6e6);
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 24px;
-    height: 60px;
+    padding: 0 32px;
+    height: 72px;
 }
 
 .admin-main {

@@ -1,7 +1,8 @@
 <template>
   <div class="login-shell">
     <div class="login-card">
-      <div class="login-lang-switch">
+      <div class="login-top-controls" style="display: flex; gap: 8px; justify-content: flex-end; width: 100%; margin-bottom: 12px;">
+        <ThemeToggle />
         <LanguageSwitcher />
       </div>
       <div class="login-header">
@@ -35,6 +36,7 @@ import { ElMessage } from 'element-plus';
 import { clearAuthSession, getRoleFromAccessToken, getUsernameFromAccessToken } from "../utils/auth";
 import { useI18n } from "vue-i18n";
 import LanguageSwitcher from "../components/LanguageSwitcher.vue";
+import ThemeToggle from "../components/ThemeToggle.vue";
 
 const router = useRouter();
 const { t } = useI18n();

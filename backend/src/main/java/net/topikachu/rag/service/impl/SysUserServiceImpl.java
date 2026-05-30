@@ -125,6 +125,15 @@ public class SysUserServiceImpl implements SysUserService {
     }
 
     @Override
+    public void updateDefaultSpace(String id, String defaultSpaceCode) {
+        SysUser user = sysUserMapper.selectById(id);
+        if (user != null) {
+            user.setDefaultSpaceCode(defaultSpaceCode);
+            sysUserMapper.updateById(user);
+        }
+    }
+
+    @Override
     public SysUser findByUsername(String username) {
         return sysUserMapper.selectOne(new LambdaQueryWrapper<SysUser>()
                 .eq(SysUser::getUsername, username));

@@ -25,7 +25,6 @@ import net.topikachu.rag.business.document.vo.UploadItemResult;
 import net.topikachu.rag.business.document.vo.UploadResult;
 import net.topikachu.rag.observability.TracingSupport;
 import net.topikachu.rag.service.etl.DocumentChunkMetadataBuilder;
-import net.topikachu.rag.service.etl.EtlJobStarter;
 import net.topikachu.rag.service.etl.EtlPipeline;
 import net.topikachu.rag.service.etl.MilvusChunkRow;
 import net.topikachu.rag.service.etl.MilvusWriteGateway;
@@ -62,6 +61,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 @Service
@@ -70,16 +70,13 @@ import java.util.stream.Collectors;
 public class DocumentServiceImpl implements DocumentService {
 
     private final DocumentMapper documentMapper;
-    private final EtlPipeline etlPipeline;
-    private final VectorStore vectorStore;
-    private final EtlJobStarter etlJobStarter;
     private final TracingSupport tracingSupport;
     private final MilvusWriteGateway milvusWriteGateway;
     private final DocumentChunkMetadataBuilder metadataBuilder;
     private final KnowledgeAclRefreshTaskMapper aclRefreshTaskMapper;
     private final EtlJobService etlJobService;
     private final Gson gson = new Gson();
-    private final DocumentUploadTransactionService documentUploadTransactionService;
+    private final org.springframework.transaction.PlatformTransactionManager transactionManager;
     private final ObjectStorageService objectStorageService;
 
     @Value("${rag.upload.max-size-bytes:52428800}")
@@ -106,7 +103,7 @@ public class DocumentServiceImpl implements DocumentService {
         return createTempFile()
                 .flatMap(tempFile -> filePart.transferTo(tempFile)
                         .then(processUploadedFile(tempFile, requestedFileName, overwrite, userId, tags, contentType))
-                        .onErrorResume(error -> cleanupOnError(tempFile, null).then(Mono.error(error))));
+                        .doFinally(s -> safeDelete(tempFile)));
     }
 
     @Override
@@ -174,40 +171,46 @@ public class DocumentServiceImpl implements DocumentService {
 
     @Override
     public Mono<Void> removeDocumentById(String id) {
-        return Mono.fromRunnable(() -> {
-                    Document doc = documentMapper.selectById(id);
+        return Mono.fromCallable(() -> documentMapper.selectById(id))
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMap(doc -> {
                     if (doc == null) {
-                        return;
+                        return Mono.empty();
                     }
+                    return milvusWriteGateway.deleteByDocUuid(doc.getDocUuid())
+                            .doOnSuccess(v -> log.info("Deleted from Milvus: docUuid={}", doc.getDocUuid()))
+                            .then(deleteSourceFile(doc))
+                            .then(Mono.fromRunnable(() -> {
+                                        aclRefreshTaskMapper.delete(Wrappers.<KnowledgeAclRefreshTask>lambdaQuery()
+                                                .eq(KnowledgeAclRefreshTask::getDocUuid, doc.getDocUuid()));
+                                        documentMapper.deleteById(id);
+                                        log.info("Deleted from database: id={}", id);
+                                    }).subscribeOn(Schedulers.boundedElastic()));
+                })
+                .then();
+    }
 
-                    milvusWriteGateway.deleteByDocUuid(doc.getDocUuid()).block();
-                    log.info("Deleted from Milvus: docUuid={}", doc.getDocUuid());
-
-                    if (StringUtils.hasText(doc.getObjectKey())) {
-                        objectStorageService.deleteObject(doc.getObjectKey());
-                        log.info("Deleted object storage file: objectKey={}", doc.getObjectKey());
-                    } else {
-                        Path baseDir = Paths.get(inputDirectory).toAbsolutePath().normalize();
-                        Path dir = baseDir.resolve(doc.getDocUuid()).normalize();
-                        if (Files.exists(dir)) {
-                            try (var walk = Files.walk(dir)) {
-                                walk.sorted(Comparator.reverseOrder()).forEach(path -> {
-                                    try {
-                                        Files.delete(path);
-                                    } catch (IOException ignore) {
-                                    }
-                                });
-                            } catch (IOException e) {
-                                throw new RuntimeException("Failed to delete file directory " + dir, e);
-                            }
-                            log.info("Deleted file directory: {}", dir);
+    private Mono<Void> deleteSourceFile(Document doc) {
+        if (StringUtils.hasText(doc.getObjectKey())) {
+            return objectStorageService.deleteObject(doc.getObjectKey())
+                    .doOnSuccess(v -> log.info("Deleted object storage file: objectKey={}", doc.getObjectKey()));
+        }
+        return Mono.fromRunnable(() -> {
+                    Path baseDir = Paths.get(inputDirectory).toAbsolutePath().normalize();
+                    Path dir = baseDir.resolve(doc.getDocUuid()).normalize();
+                    if (Files.exists(dir)) {
+                        try (var walk = Files.walk(dir)) {
+                            walk.sorted(Comparator.reverseOrder()).forEach(path -> {
+                                try {
+                                    Files.delete(path);
+                                } catch (IOException ignore) {
+                                }
+                            });
+                        } catch (IOException e) {
+                            throw new RuntimeException("Failed to delete file directory " + dir, e);
                         }
+                        log.info("Deleted file directory: {}", dir);
                     }
-
-                    aclRefreshTaskMapper.delete(Wrappers.<KnowledgeAclRefreshTask>lambdaQuery()
-                            .eq(KnowledgeAclRefreshTask::getDocUuid, doc.getDocUuid()));
-                    documentMapper.deleteById(id);
-                    log.info("Deleted from database: id={}", id);
                 })
                 .subscribeOn(Schedulers.boundedElastic())
                 .then();
@@ -233,9 +236,42 @@ public class DocumentServiceImpl implements DocumentService {
                     if (!StringUtils.hasText(doc.getObjectKey())) {
                         throw new IllegalStateException("Source file objectKey is missing");
                     }
-                    return new DownloadedDocument(doc.getFileName(), objectStorageService.getObject(doc.getObjectKey()));
+                    return doc;
                 })
-                .subscribeOn(Schedulers.boundedElastic());
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMap(doc -> Mono.usingWhen(
+                        objectStorageService.getObject(doc.getObjectKey()),
+                        is -> Mono.just(new DownloadedDocument(doc.getFileName(), is)),
+                        is -> Mono.empty(),
+                        (is, err) -> closeQuietly(is),
+                        this::closeQuietly
+                ));
+    }
+
+    @Override
+    public Mono<DownloadedDocument> previewDocumentByDocUuid(String docUuid, CurrentUserContext currentUserContext) {
+        return Mono.fromCallable(() -> {
+                    Document doc = documentMapper.selectOne(Wrappers.<Document>lambdaQuery()
+                            .eq(Document::getDocUuid, docUuid));
+                    if (doc == null) {
+                        throw new IllegalArgumentException("Document not found: " + docUuid);
+                    }
+                    if (!canAccessDocument(currentUserContext, doc)) {
+                        throw new org.springframework.security.access.AccessDeniedException("Document preview denied");
+                    }
+                    if (!StringUtils.hasText(doc.getObjectKey())) {
+                        throw new IllegalStateException("Source file objectKey is missing");
+                    }
+                    return doc;
+                })
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMap(doc -> Mono.usingWhen(
+                        objectStorageService.getObject(doc.getObjectKey()),
+                        is -> Mono.just(new DownloadedDocument(doc.getFileName(), is)),
+                        is -> Mono.empty(),
+                        (is, err) -> closeQuietly(is),
+                        this::closeQuietly
+                ));
     }
 
     @Override
@@ -279,37 +315,77 @@ public class DocumentServiceImpl implements DocumentService {
     }
 
     @Override
+    public Mono<SearchScope> resolveEffectiveSearchScope(CurrentUserContext currentUserContext, SearchScope requestedScope) {
+        SearchScope safeRequestedScope = requestedScope == null ? SearchScope.empty() : requestedScope;
+        List<String> requestedSpaces = safeRequestedScope.requestedSpaceCodes();
+        if (!requestedSpaces.isEmpty()) {
+            return validateRequestedSpaces(currentUserContext, safeRequestedScope);
+        }
+        String defaultSpace = currentUserContext == null ? null : currentUserContext.defaultSpaceCode();
+        if (!StringUtils.hasText(defaultSpace)) {
+            return Mono.error(new IllegalStateException("请先配置默认知识空间。"));
+        }
+        SearchScope defaultScope = new SearchScope(List.of(defaultSpace), safeRequestedScope.requestedTags());
+        return validateRequestedSpaces(currentUserContext, defaultScope);
+    }
+
+    private Mono<SearchScope> validateRequestedSpaces(CurrentUserContext currentUserContext, SearchScope searchScope) {
+        return getAccessibleSpaceCodes(currentUserContext)
+                .map(accessibleSpaces -> {
+                    Set<String> accessible = new LinkedHashSet<>(accessibleSpaces);
+                    for (String requestedSpace : searchScope.requestedSpaceCodes()) {
+                        if (!accessible.contains(requestedSpace)) {
+                            throw new IllegalStateException("知识空间不可访问，请重新选择或配置默认知识空间。");
+                        }
+                    }
+                    return searchScope;
+                });
+    }
+
+    @Override
     public Mono<Void> retryIngestion(String id, String userId) {
-        return Mono.fromRunnable(() -> {
-                    Document doc = documentMapper.selectById(id);
+        return Mono.fromCallable(() -> documentMapper.selectById(id))
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMap(doc -> {
                     if (doc == null) {
-                        throw new IllegalArgumentException("Document not found: " + id);
+                        return Mono.error(new IllegalArgumentException("Document not found: " + id));
                     }
                     if (!DocumentStatus.FAILED.name().equals(doc.getStatus())) {
-                        throw new IllegalStateException("Only FAILED documents can be retried");
+                        return Mono.error(new IllegalStateException("Only FAILED documents can be retried"));
                     }
                     if (doc.getRetryCount() != null && doc.getRetryCount() >= 3) {
-                        throw new IllegalStateException("Max retry (3) exceeded, please contact support");
+                        return Mono.error(new IllegalStateException("Max retry (3) exceeded, please contact support"));
                     }
-
-                    if (!StringUtils.hasText(doc.getObjectKey()) || !objectStorageService.exists(doc.getObjectKey())) {
-                        doc.setStatus(DocumentStatus.FAILED.name());
-                        doc.setErrorMessage("源文件已丢失，无法重试，请重新上传");
-                        doc.setUpdateDate(LocalDateTime.now());
-                        documentMapper.updateById(doc);
-                        return;
+                    if (!StringUtils.hasText(doc.getObjectKey())) {
+                        return markFileLostAndError(doc);
                     }
+                    return objectStorageService.exists(doc.getObjectKey())
+                            .flatMap(exists -> {
+                                if (!exists) {
+                                    return markFileLostAndError(doc);
+                                }
+                                return Mono.fromRunnable(() -> {
+                                            doc.setStatus(DocumentStatus.UPLOADED.name());
+                                            doc.setErrorMessage(null);
+                                            doc.setErrorStack(null);
+                                            doc.setAclRefreshStatus(AclRefreshStatus.PENDING.name());
+                                            doc.setAclRefreshError(null);
+                                            doc.setAclRefreshTime(null);
+                                            doc.setUpdateDate(LocalDateTime.now());
+                                            documentMapper.updateById(doc);
+                                        })
+                                        .subscribeOn(Schedulers.boundedElastic())
+                                        .then(etlJobService.retryDocumentIngestion(doc, doc.getObjectKey(), userId));
+                            });
+                });
+    }
 
-                    doc.setStatus(DocumentStatus.UPLOADED.name());
-                    doc.setErrorMessage(null);
-                    doc.setErrorStack(null);
-                    doc.setAclRefreshStatus(AclRefreshStatus.PENDING.name());
-                    doc.setAclRefreshError(null);
-                    doc.setAclRefreshTime(null);
+    private Mono<Void> markFileLostAndError(Document doc) {
+        return Mono.fromRunnable(() -> {
+                    doc.setStatus(DocumentStatus.FAILED.name());
+                    doc.setErrorMessage("源文件已丢失，无法重试，请重新上传");
                     doc.setUpdateDate(LocalDateTime.now());
                     documentMapper.updateById(doc);
-
-                    etlJobService.retryDocumentIngestion(doc, doc.getObjectKey(), userId);
                 })
                 .subscribeOn(Schedulers.boundedElastic())
                 .then();
@@ -397,61 +473,108 @@ public class DocumentServiceImpl implements DocumentService {
                                                    String contentType) {
         return tracingSupport.traceMono("etl.upload_accept",
                 uploadTraceTags(fileName, null, userId, tags),
-                Mono.fromCallable(() -> {
+                validateAndSanitize(tempFile, fileName)
+                    .flatMap(finalFileName -> computeHash(tempFile)
+                        .flatMap(hash -> persistOrDedupe(tempFile, finalFileName, hash, overwrite, userId, tags, contentType))));
+    }
+
+    private Mono<UploadResult> persistOrDedupe(Path tempFile, String finalFileName, String hash,
+                                                boolean overwrite, String userId, List<String> tags,
+                                                String contentType) {
+        return lookupExistingDocument(hash)
+                .flatMap(existing -> handleExistingDuplicate(existing, overwrite))
+                .switchIfEmpty(Mono.defer(() ->
+                        createNewDocument(tempFile, finalFileName, hash, overwrite, userId, tags, contentType)));
+    }
+
+    private Mono<String> validateAndSanitize(Path tempFile, String fileName) {
+        return Mono.fromCallable(() -> {
                     validateFile(tempFile, fileName);
-
-                    String finalFileName = sanitizeFileName(fileName);
-                    String hash = sha256(tempFile);
-                    Document existed = findByHash(hash);
-                    if (existed != null) {
-                        safeDelete(tempFile);
-                        if (overwrite) {
-                            throw new IllegalArgumentException("The file already exists : " + existed.getFileName());
-                        }
-                        return toResult(existed, false);
-                    }
-
-                    String docUuid = generateDocUuid();
-                    String objectKey = "documents/" + docUuid + "/" + finalFileName;
-                    boolean objectUploaded = false;
-                    try {
-                        objectStorageService.putObject(objectKey, tempFile, contentType);
-                        objectUploaded = true;
-
-                        Document doc = new Document();
-                        doc.setDocUuid(docUuid);
-                        doc.setFileName(finalFileName);
-                        doc.setStatus(DocumentStatus.UPLOADED.name());
-                        doc.setFileHash(hash);
-                        doc.setTags(tags);
-                        doc.setSpaceCode("public");
-                        doc.setIsPublic(Boolean.TRUE);
-                        doc.setOwnerDeptId(null);
-                        doc.setAllowedRoles(null);
-                        doc.setAllowedDeptIds(null);
-                        doc.setAclVersion(1);
-                        doc.setAclRefreshStatus(AclRefreshStatus.PENDING.name());
-                        doc.setAclRefreshError(null);
-                        doc.setAclRefreshTime(null);
-                        doc.setCreateDate(LocalDateTime.now());
-                        doc.setUpdateDate(LocalDateTime.now());
-                        doc.setObjectKey(objectKey);
-
-                        documentUploadTransactionService.createDocumentAndQueueJob(doc, objectKey, userId);
-
-                        log.info("Upload created: docUuid={}, fileName={}, status={}, fileHash={}, path={}",
-                                docUuid, finalFileName, doc.getStatus(), hash, objectKey);
-                        safeDelete(tempFile);
-                        return toResult(doc, true);
-                    } catch (Exception e) {
-                        safeDelete(tempFile);
-                        if (objectUploaded) {
-                            objectStorageService.deleteObject(objectKey);
-                        }
-                        throw e;
-                    }
+                    return sanitizeFileName(fileName);
                 })
-                .subscribeOn(Schedulers.boundedElastic()));
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    private Mono<String> computeHash(Path tempFile) {
+        return Mono.fromCallable(() -> sha256(tempFile))
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    private Mono<Document> lookupExistingDocument(String hash) {
+        return Mono.fromCallable(() -> findByHash(hash))
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    private Mono<UploadResult> handleExistingDuplicate(Document existing, boolean overwrite) {
+        if (overwrite) {
+            return Mono.error(new IllegalArgumentException(
+                    "The file already exists : " + existing.getFileName()));
+        }
+        return Mono.just(toResult(existing, false));
+    }
+
+    private Mono<UploadResult> createNewDocument(Path tempFile, String finalFileName, String hash,
+                                                  boolean overwrite, String userId, List<String> tags,
+                                                  String contentType) {
+        String docUuid = generateDocUuid();
+        String objectKey = "documents/" + docUuid + "/" + finalFileName;
+        Document doc = buildNewDocument(docUuid, finalFileName, hash, tags, objectKey);
+        return uploadToStorageAndPersist(tempFile, objectKey, contentType, doc, userId)
+                .thenReturn(toResult(doc, true));
+    }
+
+    private Document buildNewDocument(String docUuid, String fileName, String hash,
+                                      List<String> tags, String objectKey) {
+        Document doc = new Document();
+        doc.setDocUuid(docUuid);
+        doc.setFileName(fileName);
+        doc.setStatus(DocumentStatus.UPLOADED.name());
+        doc.setFileHash(hash);
+        doc.setTags(tags);
+        doc.setSpaceCode("public");
+        doc.setIsPublic(Boolean.TRUE);
+        doc.setOwnerDeptId(null);
+        doc.setAllowedRoles(null);
+        doc.setAllowedDeptIds(null);
+        doc.setAclVersion(1);
+        doc.setAclRefreshStatus(AclRefreshStatus.PENDING.name());
+        doc.setAclRefreshError(null);
+        doc.setAclRefreshTime(null);
+        doc.setCreateDate(LocalDateTime.now());
+        doc.setUpdateDate(LocalDateTime.now());
+        doc.setObjectKey(objectKey);
+        return doc;
+    }
+
+    private Mono<Void> uploadToStorageAndPersist(Path tempFile, String objectKey, String contentType,
+                                                  Document doc, String userId) {
+        AtomicBoolean objectUploaded = new AtomicBoolean(false);
+        return objectStorageService.putObject(objectKey, tempFile, contentType)
+                .doOnSuccess(v -> objectUploaded.set(true))
+                .then(Mono.defer(() -> persistDocumentAndQueueEtl(doc, objectKey, userId)))
+                .doOnSuccess(v -> log.info("Upload created: docUuid={}, fileName={}, status={}, fileHash={}, path={}",
+                        doc.getDocUuid(), doc.getFileName(), doc.getStatus(), doc.getFileHash(), objectKey))
+                .onErrorResume(e -> {
+                    Mono<Void> cleanup = objectUploaded.get()
+                            ? objectStorageService.deleteObject(objectKey)
+                            : Mono.empty();
+                    return cleanup.then(Mono.error(e));
+                });
+    }
+
+    private Mono<Void> persistDocumentAndQueueEtl(Document doc, String objectKey, String userId) {
+        return Mono.fromCallable(() -> {
+            org.springframework.transaction.support.TransactionTemplate tx =
+                    new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+            tx.executeWithoutResult(status -> {
+                int inserted = documentMapper.insert(doc);
+                if (inserted != 1) {
+                    throw new IllegalStateException("Insert document failed");
+                }
+                etlJobService.queueDocumentIngestionSync(doc, objectKey, userId);
+            });
+            return null;
+        }).subscribeOn(Schedulers.boundedElastic()).then();
     }
 
     private Map<String, Object> uploadTraceTags(String fileName, String docUuid, String userId, List<String> tags) {
@@ -461,15 +584,6 @@ public class DocumentServiceImpl implements DocumentService {
         traceTags.put("document.user_id", userId);
         traceTags.put("document.tags", tags == null ? "" : String.join(",", tags));
         return traceTags;
-    }
-
-    private Mono<UploadResult> cleanupOnError(Path tempFile, Path target) {
-        return Mono.fromRunnable(() -> {
-                    safeDelete(tempFile);
-                    safeDelete(target);
-                })
-                .subscribeOn(Schedulers.boundedElastic())
-                .then(Mono.empty());
     }
 
     private UploadResult toResult(Document doc, boolean created) {
@@ -549,6 +663,18 @@ public class DocumentServiceImpl implements DocumentService {
         }
     }
 
+    private Mono<Void> closeQuietly(InputStream is) {
+        return Mono.fromRunnable(() -> {
+            try {
+                if (is != null) {
+                    is.close();
+                }
+            } catch (IOException e) {
+                log.warn("Failed to close InputStream for downloaded document", e);
+            }
+        });
+    }
+
     private String sha256(Path path) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
@@ -584,6 +710,31 @@ public class DocumentServiceImpl implements DocumentService {
                 wrapper.or().eq("owner_dept_id", currentUserContext.deptId());
             }
         });
+    }
+
+    private boolean canAccessDocument(CurrentUserContext currentUserContext, Document doc) {
+        if (doc == null) {
+            return false;
+        }
+        if (currentUserContext == null || currentUserContext.isAdmin()) {
+            return true;
+        }
+        if (Boolean.TRUE.equals(doc.getIsPublic())) {
+            return true;
+        }
+        if (StringUtils.hasText(currentUserContext.role())
+                && doc.getAllowedRoles() != null
+                && doc.getAllowedRoles().contains(currentUserContext.role())) {
+            return true;
+        }
+        if (StringUtils.hasText(currentUserContext.deptId())) {
+            if (currentUserContext.deptId().equals(doc.getOwnerDeptId())) {
+                return true;
+            }
+            return doc.getAllowedDeptIds() != null
+                    && doc.getAllowedDeptIds().contains(currentUserContext.deptId());
+        }
+        return false;
     }
 
     private void applySpaceScope(QueryWrapper<Document> query, SearchScope searchScope) {
@@ -710,7 +861,7 @@ public class DocumentServiceImpl implements DocumentService {
         markTaskRunning(task);
         markDocumentAclRefreshStatus(doc, AclRefreshStatus.RUNNING, null, null);
         try {
-            refreshVectorMetadata(doc);
+            refreshVectorMetadata(doc).block();
             markTaskSuccess(task);
             markDocumentAclRefreshStatus(doc, AclRefreshStatus.SUCCESS, null, LocalDateTime.now());
             return true;
@@ -724,17 +875,18 @@ public class DocumentServiceImpl implements DocumentService {
         }
     }
 
-    private void refreshVectorMetadata(Document doc) {
-        List<MilvusChunkRow> chunks = milvusWriteGateway.queryChunksByDocUuid(doc.getDocUuid()).block();
-        if (chunks == null || chunks.isEmpty()) {
-            throw new IllegalStateException("No Milvus chunks found for doc_uuid=" + doc.getDocUuid());
-        }
-
-        List<JsonObject> rows = chunks.stream()
-                .map(chunk -> toAclRefreshRow(doc, chunk))
-                .toList();
-
-        milvusWriteGateway.upsert(rows).block();
+    private Mono<Void> refreshVectorMetadata(Document doc) {
+        return milvusWriteGateway.queryChunksByDocUuid(doc.getDocUuid())
+                .flatMap(chunks -> {
+                    if (chunks == null || chunks.isEmpty()) {
+                        return Mono.error(new IllegalStateException(
+                                "No Milvus chunks found for doc_uuid=" + doc.getDocUuid()));
+                    }
+                    List<JsonObject> rows = chunks.stream()
+                            .map(chunk -> toAclRefreshRow(doc, chunk))
+                            .toList();
+                    return milvusWriteGateway.upsert(rows).then();
+                });
     }
 
     private JsonObject toAclRefreshRow(Document doc, MilvusChunkRow chunk) {

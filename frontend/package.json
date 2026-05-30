@@ -9,13 +9,18 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@vueuse/core": "^14.3.0",
     "axios": "^1.13.3",
     "element-plus": "^2.7.8",
+    "highlight.js": "^11.11.1",
+    "markdown-it": "^14.2.0",
     "vue": "^3.4.34",
     "vue-i18n": "^9.14.0",
     "vue-router": "^4.4.0"
   },
   "devDependencies": {
+    "@types/highlight.js": "^9.12.4",
+    "@types/markdown-it": "^14.1.2",
     "@vitejs/plugin-vue": "^5.0.5",
     "typescript": "^5.5.4",
     "vite": "^5.4.0",

@@ -83,9 +83,6 @@ public class HybridVectorWriter {
                     if (rows.isEmpty()) {
                         return Mono.error(new IllegalStateException("All document chunks failed embedding"));
                     }
-                    if (skippedChunks.get() > 0) {
-                        log.warn("Skipped {} chunk(s) during hybrid vector write", skippedChunks.get());
-                    }
                     return tracingSupport.traceMono("etl.vector_upsert",
                             Map.of(
                                     "document.doc_uuid", String.valueOf(traceTags.getOrDefault("document.doc_uuid", "")),
@@ -93,6 +90,12 @@ public class HybridVectorWriter {
                             milvusWriteGateway.insert(rows));
                 })
                 .doOnNext(this::logInsert)
+                .doOnSuccess(v -> {
+                    int skipped = skippedChunks.get();
+                    if (skipped > 0) {
+                        log.warn("Skipped {} chunk(s) during hybrid vector write", skipped);
+                    }
+                })
                 .then();
     }
 

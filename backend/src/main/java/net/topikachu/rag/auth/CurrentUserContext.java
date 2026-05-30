@@ -6,6 +6,7 @@ public record CurrentUserContext(
         String role,
         String deptId,
         String deptName,
+        String defaultSpaceCode,
         boolean isAdmin
 ) {
 }

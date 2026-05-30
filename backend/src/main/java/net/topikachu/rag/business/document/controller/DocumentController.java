@@ -109,6 +109,16 @@ public class DocumentController {
                 .map(this::toDownloadResponse);
     }
 
+    @GetMapping("/docs/by-uuid/{docUuid}/preview")
+    @PreAuthorize("hasAnyRole('USER', 'ADMIN')")
+    public Mono<ResponseEntity<Resource>> preview(@PathVariable String docUuid, Mono<Principal> principalMono) {
+        return principalMono.map(Principal::getName)
+                .flatMap(username -> documentService.previewDocumentByDocUuid(
+                        docUuid,
+                        currentUserContextService.resolveByUsername(username)))
+                .map(this::toPreviewResponse);
+    }
+
     @DeleteMapping("/docs")
     @PreAuthorize("hasRole('ADMIN')")
     public Mono<AjaxResult> removeBatch(@RequestBody List<String> ids) {
@@ -186,5 +196,29 @@ public class DocumentController {
                 .contentType(MediaType.APPLICATION_OCTET_STREAM)
                 .header(HttpHeaders.CONTENT_DISPOSITION, contentDisposition.toString())
                 .body(new InputStreamResource(document.inputStream()));
+    }
+
+    private ResponseEntity<Resource> toPreviewResponse(DownloadedDocument document) {
+        ContentDisposition contentDisposition = ContentDisposition.inline()
+                .filename(document.fileName(), StandardCharsets.UTF_8)
+                .build();
+        return ResponseEntity.ok()
+                .contentType(detectMediaType(document.fileName()))
+                .header(HttpHeaders.CONTENT_DISPOSITION, contentDisposition.toString())
+                .body(new InputStreamResource(document.inputStream()));
+    }
+
+    private MediaType detectMediaType(String fileName) {
+        if (fileName == null) {
+            return MediaType.APPLICATION_OCTET_STREAM;
+        }
+        String normalized = fileName.toLowerCase(java.util.Locale.ROOT);
+        if (normalized.endsWith(".pdf")) {
+            return MediaType.APPLICATION_PDF;
+        }
+        if (normalized.endsWith(".txt") || normalized.endsWith(".md")) {
+            return MediaType.TEXT_PLAIN;
+        }
+        return MediaType.APPLICATION_OCTET_STREAM;
     }
 }

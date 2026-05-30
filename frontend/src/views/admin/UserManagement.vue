@@ -13,6 +13,7 @@
         <el-table-column prop="username" :label="t('common.username')" />
         <el-table-column prop="deptId" :label="t('users.deptId')" min-width="140" />
         <el-table-column prop="deptName" :label="t('users.deptName')" min-width="160" />
+        <el-table-column prop="defaultSpaceCode" :label="t('users.defaultSpace')" min-width="150" />
         <el-table-column prop="role" :label="t('common.role')">
           <template #default="scope">
             <el-tag :type="scope.row.role === 'ADMIN' ? 'danger' : 'success'" size="small">
@@ -72,6 +73,9 @@
         <el-form-item :label="t('users.deptName')">
           <el-input v-model="form.deptName" :placeholder="t('users.enterDeptName')" />
         </el-form-item>
+        <el-form-item :label="t('users.defaultSpace')">
+          <el-input v-model="form.defaultSpaceCode" :placeholder="t('users.enterDefaultSpace')" />
+        </el-form-item>
       </el-form>
       <template #footer>
         <span class="dialog-footer">
@@ -96,6 +100,9 @@
         <el-form-item :label="t('users.deptName')">
           <el-input v-model="deptForm.deptName" :placeholder="t('users.enterDeptName')" />
         </el-form-item>
+        <el-form-item :label="t('users.defaultSpace')">
+          <el-input v-model="deptForm.defaultSpaceCode" :placeholder="t('users.enterDefaultSpace')" />
+        </el-form-item>
       </el-form>
       <template #footer>
         <span class="dialog-footer">
@@ -114,7 +121,7 @@ import { ref, onMounted, reactive } from 'vue';
 import { Plus } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { FormInstance, FormRules } from 'element-plus';
-import { getUsers, createUser, deleteUser, resetUserPassword, updateUserDepartment, type User } from '../../api/user';
+import { getUsers, createUser, deleteUser, resetUserPassword, updateUserDepartment, updateUserDefaultSpace, type User } from '../../api/user';
 import { useI18n } from 'vue-i18n';
 
 const { t } = useI18n();
@@ -133,12 +140,14 @@ const form = reactive({
   password: '',
   role: 'USER',
   deptId: '',
-  deptName: ''
+  deptName: '',
+  defaultSpaceCode: ''
 });
 
 const deptForm = reactive({
   deptId: '',
-  deptName: ''
+  deptName: '',
+  defaultSpaceCode: ''
 });
 
 const rules = reactive<FormRules>({
@@ -164,6 +173,7 @@ const showAddDialog = () => {
     form.role = 'USER';
     form.deptId = '';
     form.deptName = '';
+    form.defaultSpaceCode = '';
     dialogVisible.value = true;
 };
 
@@ -190,6 +200,7 @@ const showDeptDialog = (row: User) => {
     editingUserId.value = row.id;
     deptForm.deptId = row.deptId || '';
     deptForm.deptName = row.deptName || '';
+    deptForm.defaultSpaceCode = row.defaultSpaceCode || '';
     deptDialogVisible.value = true;
 };
 
@@ -201,6 +212,7 @@ const submitDeptForm = async () => {
             deptId: deptForm.deptId,
             deptName: deptForm.deptName
         });
+        await updateUserDefaultSpace(editingUserId.value, deptForm.defaultSpaceCode);
         ElMessage.success(t("users.departmentUpdated"));
         deptDialogVisible.value = false;
         fetchUsers();

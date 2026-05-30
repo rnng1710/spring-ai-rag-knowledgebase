@@ -41,6 +41,8 @@ public class EtlJobWorker {
     private int batchsize;
     @Value("${rag.etl.worker.lock-minutes:10}")
     private int lockMinutes;
+    @Value("${rag.etl.worker.concurrency:4}")
+    private int concurrency;
     private final EtlJobLeaseService etlJobLeaseService;
     private final EtlJobService etlJobService;
     private final EtlJobMapper etlJobMapper;
@@ -49,95 +51,134 @@ public class EtlJobWorker {
 
     @Scheduled(fixedDelayString = "${rag.etl.worker.fixed-delay-ms:5000}")
     public void poll() {
-        List<EtlJob> jobs = etlJobService.findRunnableJobs(batchsize);
-
-        for(EtlJob job : jobs){
-            tryClaimAndRun(job);
-        }
+        pollOnce().subscribe(null, error -> log.error("ETL worker poll failed", error));
     }
 
-    private void tryClaimAndRun(EtlJob job) {
+    Mono<Void> pollOnce() {
+        return etlJobService.findRunnableJobs(batchsize)
+                .flatMap(this::processJobs);
+    }
+
+    /**
+     * Process a batch of ETL jobs with bounded concurrency.
+     * Returns a composable Mono for testability — callers can block() on it
+     * to await deterministic completion instead of relying on fire-and-forget races.
+     */
+    Mono<Void> processJobs(List<EtlJob> jobs) {
+        if (jobs == null || jobs.isEmpty()) {
+            return Mono.empty();
+        }
+        return Flux.fromIterable(jobs)
+                .flatMap(this::tryClaimAndRun, Math.max(1, concurrency))
+                .doOnError(error -> log.error("ETL worker poll batch failed", error))
+                .then();
+    }
+
+    private Mono<Void> tryClaimAndRun(EtlJob job) {
         if(job == null){
             log.warn("Document is empty");
-            return;
-        }
-        LocalDateTime now = LocalDateTime.now();
-        boolean change = etlJobService.markRunning(job.getId(),workerId, now.plusMinutes(lockMinutes));
-        if (change){
-            runJob(job.getId());
-        } else {
-            log.warn("Failed to update Document status : {}", job.getId());
+            return Mono.empty();
         }
 
+        LocalDateTime now = LocalDateTime.now();
+        return etlJobService.markRunning(job.getId(), workerId, now.plusMinutes(lockMinutes))
+                .flatMap(claimed -> {
+                    if (claimed) {
+                        return runJob(job.getId());
+                    }
+                    log.warn("Failed to update Document status : {}", job.getId());
+                    return Mono.empty();
+                })
+                .onErrorResume(error -> {
+                    log.error("Failed to claim or run ETL job: {}", job.getId(), error);
+                    return Mono.empty();
+                });
     }
 
-    private void runJob(String jobId) {
-        EtlJob job = etlJobMapper.selectById(jobId);
-        if (job == null){
+    private Mono<Void> runJob(String jobId) {
+        return Mono.fromCallable(() -> etlJobMapper.selectById(jobId))
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMap(this::runJobInternal);
+    }
+
+    private Mono<Void> runJobInternal(EtlJob job) {
+        if (job == null) {
             log.warn("Not found job worker");
-            return;
+            return Mono.empty();
         }
 
         Disposable heartbeat = startHeartbeat(job.getId());
-        Path path = null;
-        boolean tempDownloaded = false;
-
-        try {
-            Document doc = documentMapper.selectOne(
-                    Wrappers.<Document>lambdaQuery().eq(Document::getDocUuid, job.getDocUuid()).last("LIMIT 1")
-            );
-            if(doc == null){
-                markFailed(job, new IllegalStateException("Document not found: " + job.getDocUuid()));
-                return;
-            }
-            if (StringUtils.hasText(job.getObjectKey())) {
-                path = objectStorageService.downloadToTempFile(job.getObjectKey(), job.getFileName());
-                tempDownloaded = true;
-            } else {
-                path = Paths.get(job.getFilePath());
-                if(!Files.exists(path)){
-                    throw new IllegalStateException("Source file missing: " + path);
-                }
-            }
-            etlPipeline.ingestionByPath(path,job.getDocUuid(),job.getCreateUserId(),job.getTags()).block();
-            markSuccess(job);
-        } catch (Exception e){
-            log.info("Failed to execute the task: {}", job.getDocUuid());
-            markFailed(job, e);
-        } finally {
-            if (tempDownloaded && path != null) {
-                deleteTempFileWithRetry(path);
-            }
-            heartbeat.dispose();
-        }
+        return prepareJobFile(job)
+                .flatMap(jobFile -> runIngestion(job, jobFile))
+                .onErrorResume(error -> handleFailure(job, error))
+                .doFinally(signalType -> heartbeat.dispose());
     }
 
-    private void deleteTempFileWithRetry(Path path) {
-        int maxAttempts = 5;
-        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-                if (Files.deleteIfExists(path)) {
-                    return;
-                }
-                return;
-            } catch (Exception cleanupError) {
-                if (attempt == maxAttempts) {
-                    path.toFile().deleteOnExit();
-                    log.warn("Failed to delete ETL temp file after {} attempts, scheduled deleteOnExit: {}",
-                            maxAttempts, path, cleanupError);
-                    return;
-                }
-                try {
-                    Thread.sleep(200L * attempt);
-                } catch (InterruptedException interruptedException) {
-                    Thread.currentThread().interrupt();
-                    path.toFile().deleteOnExit();
-                    log.warn("Interrupted while deleting ETL temp file, scheduled deleteOnExit: {}",
-                            path, cleanupError);
-                    return;
-                }
-            }
-        }
+    private Mono<Void> runIngestion(EtlJob job, JobFile jobFile) {
+        return etlPipeline.ingestionByPath(
+                        jobFile.path(),
+                        job.getDocUuid(),
+                        job.getCreateUserId(),
+                        job.getTags())
+                .then(markSuccess(job))
+                .doFinally(signalType -> {
+                    if (jobFile.tempDownloaded()) {
+                        deleteTempFileWithRetry(jobFile.path()).subscribe();
+                    }
+                });
+    }
+
+    private Mono<Void> handleFailure(EtlJob job, Throwable error) {
+        log.info("Failed to execute the task: {}", job.getDocUuid());
+        return markFailed(job, error);
+    }
+
+    private Mono<JobFile> prepareJobFile(EtlJob job) {
+        return Mono.fromCallable(() -> {
+                    Document doc = documentMapper.selectOne(
+                            Wrappers.<Document>lambdaQuery().eq(Document::getDocUuid, job.getDocUuid()).last("LIMIT 1")
+                    );
+                    if (doc == null) {
+                        throw new IllegalStateException("Document not found: " + job.getDocUuid());
+                    }
+                    return doc;
+                })
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMap(doc -> {
+                    if (StringUtils.hasText(job.getObjectKey())) {
+                        return objectStorageService.downloadToTempFile(job.getObjectKey(), job.getFileName())
+                                .map(path -> new JobFile(path, true));
+                    }
+                    Path path = Paths.get(job.getFilePath());
+                    if (!Files.exists(path)) {
+                        return Mono.error(new IllegalStateException("Source file missing: " + path));
+                    }
+                    return Mono.just(new JobFile(path, false));
+                });
+    }
+
+    private record JobFile(Path path, boolean tempDownloaded) {
+    }
+
+    private Mono<Void> deleteTempFileWithRetry(Path path) {
+        return deleteTempFileAttempt(path, 1)
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    private Mono<Void> deleteTempFileAttempt(Path path, int attempt) {
+        return Mono.fromCallable(() -> Files.deleteIfExists(path))
+                .subscribeOn(Schedulers.boundedElastic())
+                .then()
+                .onErrorResume(error -> {
+                    if (attempt >= 5) {
+                        path.toFile().deleteOnExit();
+                        log.warn("Failed to delete ETL temp file after {} attempts, scheduled deleteOnExit: {}",
+                                5, path, error);
+                        return Mono.empty();
+                    }
+                    return Mono.delay(Duration.ofMillis(200L * attempt))
+                            .then(deleteTempFileAttempt(path, attempt + 1));
+                });
     }
 
     private Disposable startHeartbeat(String jobId) {
@@ -160,54 +201,62 @@ public class EtlJobWorker {
                 .subscribe();
     }
 
-    private void markSuccess(EtlJob job){
-        LocalDateTime now = LocalDateTime.now();
-        int updated = etlJobMapper.update(null,
-                Wrappers.<EtlJob>lambdaUpdate()
-                        .set(EtlJob::getStatus, EtlJobStatus.SUCCESS.name())
-                        .set(EtlJob::getLockedBy, null)
-                        .set(EtlJob::getLockedUntil, null)
-                        .set(EtlJob::getLastError, null)
-                        .set(EtlJob::getErrorStack, null)
-                        .set(EtlJob::getUpdateDate, now)
-                        .set(EtlJob::getFinishedAt, now)
-                        .set(EtlJob::getActiveKey, null)
-                        .eq(EtlJob::getId, job.getId())
-                        .eq(EtlJob::getStatus, EtlJobStatus.RUNNING.name())
-                        .eq(EtlJob::getLockedBy, workerId)
-        );
-        if (updated != 1) {
-            log.warn("Skip marking ETL job success because lease was lost: jobId={}, workerId={}",
-                    job.getId(), workerId);
-        }
+    private Mono<Void> markSuccess(EtlJob job){
+        return Mono.fromRunnable(() -> {
+                    LocalDateTime now = LocalDateTime.now();
+                    int updated = etlJobMapper.update(null,
+                            Wrappers.<EtlJob>lambdaUpdate()
+                                    .set(EtlJob::getStatus, EtlJobStatus.SUCCESS.name())
+                                    .set(EtlJob::getLockedBy, null)
+                                    .set(EtlJob::getLockedUntil, null)
+                                    .set(EtlJob::getLastError, null)
+                                    .set(EtlJob::getErrorStack, null)
+                                    .set(EtlJob::getUpdateDate, now)
+                                    .set(EtlJob::getFinishedAt, now)
+                                    .set(EtlJob::getActiveKey, null)
+                                    .eq(EtlJob::getId, job.getId())
+                                    .eq(EtlJob::getStatus, EtlJobStatus.RUNNING.name())
+                                    .eq(EtlJob::getLockedBy, workerId)
+                    );
+                    if (updated != 1) {
+                        log.warn("Skip marking ETL job success because lease was lost: jobId={}, workerId={}",
+                                job.getId(), workerId);
+                    }
+                })
+                .subscribeOn(Schedulers.boundedElastic())
+                .then();
     }
 
-    private void markFailed(EtlJob job, Throwable error){
-        LocalDateTime now = LocalDateTime.now();
+    private Mono<Void> markFailed(EtlJob job, Throwable error){
+        return Mono.fromRunnable(() -> {
+                    LocalDateTime now = LocalDateTime.now();
 
-        int retryCount = job.getRetryCount() == null ? 0 : job.getRetryCount();
-        int nextRetryCount = retryCount + 1;
+                    int retryCount = job.getRetryCount() == null ? 0 : job.getRetryCount();
+                    int nextRetryCount = retryCount + 1;
 
-        int updated = etlJobMapper.update(null,
-                Wrappers.<EtlJob>lambdaUpdate()
-                        .set(EtlJob::getFinishedAt, now)
-                        .set(EtlJob::getStatus, EtlJobStatus.FAILED.name())
-                        .set(EtlJob::getLockedBy, null)
-                        .set(EtlJob::getLockedUntil, null)
-                        .set(EtlJob::getRetryCount, nextRetryCount)
-                        .set(EtlJob::getUpdateDate, now)
-                        .set(EtlJob::getNextRetryTime, calculateNextRetryTime(nextRetryCount))
-                        .set(EtlJob::getLastError, summarizeError(error))
-                        .set(EtlJob::getErrorStack, formatStackTrace(error))
-                        .set(EtlJob::getActiveKey, null)
-                        .eq(EtlJob::getId, job.getId())
-                        .eq(EtlJob::getStatus, EtlJobStatus.RUNNING.name())
-                        .eq(EtlJob::getLockedBy, workerId)
-        );
-        if (updated != 1) {
-            log.warn("Skip marking ETL job failed because lease was lost: jobId={}, workerId={}",
-                    job.getId(), workerId);
-        }
+                    int updated = etlJobMapper.update(null,
+                            Wrappers.<EtlJob>lambdaUpdate()
+                                    .set(EtlJob::getFinishedAt, now)
+                                    .set(EtlJob::getStatus, EtlJobStatus.FAILED.name())
+                                    .set(EtlJob::getLockedBy, null)
+                                    .set(EtlJob::getLockedUntil, null)
+                                    .set(EtlJob::getRetryCount, nextRetryCount)
+                                    .set(EtlJob::getUpdateDate, now)
+                                    .set(EtlJob::getNextRetryTime, calculateNextRetryTime(nextRetryCount))
+                                    .set(EtlJob::getLastError, summarizeError(error))
+                                    .set(EtlJob::getErrorStack, formatStackTrace(error))
+                                    .set(EtlJob::getActiveKey, null)
+                                    .eq(EtlJob::getId, job.getId())
+                                    .eq(EtlJob::getStatus, EtlJobStatus.RUNNING.name())
+                                    .eq(EtlJob::getLockedBy, workerId)
+                    );
+                    if (updated != 1) {
+                        log.warn("Skip marking ETL job failed because lease was lost: jobId={}, workerId={}",
+                                job.getId(), workerId);
+                    }
+                })
+                .subscribeOn(Schedulers.boundedElastic())
+                .then();
     }
 
     private LocalDateTime calculateNextRetryTime(int retryCount) {

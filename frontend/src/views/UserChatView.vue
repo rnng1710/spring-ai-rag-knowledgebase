@@ -6,18 +6,17 @@
         <div class="chat-sub">{{ t("chat.signedInAs", { username }) }}</div>
       </div>
       
-      <!-- Space Scope Selector -->
       <div class="kb-selector" style="margin-bottom: 20px; padding: 0 12px;">
-         <div style="font-size:12px; color:#444746; margin-bottom:8px; font-weight:500">{{ t("chat.spaceScope") }}</div>
-         <el-select v-model="selectedSpaces" :placeholder="t('chat.selectSpaces')" size="small" multiple clearable collapse-tags collapse-tags-tooltip>
+         <div class="kb-selector-title">{{ t("chat.spaceScope") }}</div>
+         <el-select v-model="selectedSpaces" :placeholder="t('chat.selectSpaces')" size="small" multiple clearable collapse-tags collapse-tags-tooltip @change="handleSpaceSelectionChange">
             <template #prefix><el-icon><Collection /></el-icon></template>
             <el-option v-for="space in spaceOptions" :key="space" :label="space" :value="space" />
           </el-select>
-         <div style="font-size:12px; color:#777; margin-top:8px;">{{ t("chat.allAccessibleSpaces") }}</div>
+         <div class="kb-selector-hint">{{ t("chat.defaultSpaceHint") }}</div>
       </div>
 
       <el-button class="chat-action" @click="reset">
-        <el-icon style="margin-right:8px"><Plus /></el-icon> {{ t("chat.newChat") }}
+        <el-icon class="icon-margin"><Plus /></el-icon> {{ t("chat.newChat") }}
       </el-button>
       
       <div class="chat-history">
@@ -27,65 +26,30 @@
       </div>
       
       <div style="margin-top:auto">
-          <el-button text @click="logout" style="width:100%; justify-content:flex-start; color:#444746">
-            <el-icon style="margin-right:8px"><SwitchButton /></el-icon> {{ t("common.signOut") }}
+          <el-button text @click="logout" class="logout-btn">
+            <el-icon class="icon-margin"><SwitchButton /></el-icon> {{ t("common.signOut") }}
           </el-button>
       </div>
     </aside>
     
-    <main class="chat-main" :class="{ 'is-centered-mode': messages.length === 0 }">
+    <main class="chat-main">
       
-      <!-- Initial State: Centered Greeting & Input -->
+      <!-- Initial State: Centered Greeting -->
       <div v-if="messages.length === 0" class="chat-center-container">
           <div class="chat-greeting">
             <div class="greeting-text">{{ t("chat.hello", { username }) }}</div>
             <div class="greeting-sub">{{ t("chat.howCanIHelp") }}</div>
           </div>
-          
-          <div class="chat-input-center-wrapper">
-             <div class="chat-input-container">
-                <textarea 
-                    v-model="question" 
-                    class="chat-input-textarea" 
-                  :placeholder="t('chat.askAnything')" 
-                    rows="1"
-                    @input="adjustTextareaHeight"
-                    @keydown.enter.exact.prevent="startChat"
-                ></textarea>
-                <div class="chat-input-actions">
-                   <div class="input-tip">{{ t("chat.inputTip") }}</div>
-                     <div class="input-controls">
-                         <el-select v-model="selectedMode" size="small" class="mode-select">
-                             <el-option
-                               v-for="mode in modeOptions"
-                               :key="mode.value"
-                               :label="mode.label"
-                               :value="mode.value"
-                             />
-                         </el-select>
-                         <el-select v-model="selectedModel" size="small" style="width: 120px;">
-                             <el-option label="Qwen 2.5" value="ollama" />
-                             <el-option label="DeepSeek" value="deepseek" />
-                             <el-option label="Gemini" value="gemini" />
-                         </el-select>
-                         <el-button type="primary" circle class="send-btn" @click="startChat" :loading="loading" :disabled="!question.trim()">
-                            <el-icon><Position /></el-icon>
-                         </el-button>
-                     </div>
-                </div>
-            </div>
-          </div>
       </div>
 
-      <!-- Active State: Thread + Bottom Input -->
-      <template v-else>
-          <div class="chat-thread">
+      <!-- Active State: Thread -->
+      <div v-show="messages.length > 0" class="chat-thread" ref="chatThreadRef">
             <div v-for="(msg, index) in messages" :key="index" :class="['message-row', msg.role]">
                 <div class="message-bubble">
                     
                     <!-- Assistant Icon (Left) -->
                     <!-- Assistant Icon (Left) -->
-                    <div v-if="msg.role === 'assistant'" style="display:flex; align-items:flex-start; margin-bottom: 8px;">
+                    <div v-if="msg.role === 'assistant'" class="assistant-header">
                          <!-- Thinking State with Circle -->
                          <div v-if="!msg.content && index === messages.length - 1" class="thinking-wrapper">
                              <svg class="thinking-circle-svg" viewBox="25 25 50 50">
@@ -100,18 +64,20 @@
                              </svg>
                              <img src="https://www.gstatic.com/lamda/images/gemini_sparkle_v002_d4735304ff6292a690345.svg" class="thinking-icon" />
                          </div>
-                         <!-- Normal State -->
                          <img v-else 
                             src="https://www.gstatic.com/lamda/images/gemini_sparkle_v002_d4735304ff6292a690345.svg" 
                             width="24" height="24" 
-                            style="margin-right:12px"
+                            class="assistant-icon"
                          />
                          
-                         <span style="font-weight:600; font-size:14px; margin-top: 2px;">{{ msg.modelName || t("chat.assistant") }}</span>
+                         <span class="assistant-name">{{ msg.modelName || t("chat.assistant") }}</span>
                     </div>
 
-                    <div v-if="msg.content" class="message-content" style="white-space: pre-wrap;">{{ msg.content }}</div>
-                      <div v-else class="message-content" style="color:#909399; font-style:italic">{{ t("chat.thinking") }}</div>
+                    <template v-if="msg.content">
+                        <MarkdownRenderer v-if="msg.role === 'assistant'" :content="msg.content" class="message-content" />
+                        <div v-else class="message-content formatted-content">{{ msg.content }}</div>
+                    </template>
+                    <div v-else class="message-content thinking-content">{{ t("chat.thinking") }}</div>
 
                     <div v-if="msg.followupOptions && msg.followupOptions.length > 0" class="followup-options">
                       <el-button
@@ -144,9 +110,51 @@
                     
                     <!-- Sources -->
                     <div v-if="msg.sources && msg.sources.length > 0" class="message-sources">
-                        <div v-for="(source, sIdx) in msg.sources" :key="sIdx" style="font-size: 13px; color: #444746; margin-top: 4px;">
+                        <div v-for="(source, sIdx) in msg.sources" :key="sIdx" class="source-item" @click="openSource(source)">
                           {{ formatSourceReference(source) }}
                         </div>
+                    </div>
+
+                    <!-- Feedback -->
+                    <div v-if="msg.role === 'assistant' && msg.content && msg.status === 'done'" class="message-feedback">
+                      <span class="feedback-hint">{{ t("chat.feedbackHint") }}</span>
+                      <span
+                        class="feedback-thumb"
+                        :class="{ active: msg.feedback === 'positive' }"
+                        @click.stop="handlePositiveFeedback(msg)"
+                      >👍</span>
+                      <el-popover
+                        :visible="feedbackPopoverId === msg.id"
+                        placement="top"
+                        :width="240"
+                        trigger="click"
+                        :show-arrow="false"
+                        :offset="8"
+                        popper-class="feedback-popover-popper"
+                        @hide="feedbackPopoverId = null"
+                      >
+                        <template #reference>
+                          <span
+                            class="feedback-thumb"
+                            :class="{ active: msg.feedback === 'negative' }"
+                            @click.stop="feedbackPopoverId = msg.id"
+                          >👎</span>
+                        </template>
+                        <div class="feedback-popover">
+                          <p class="feedback-popover-title">{{ t("chat.feedbackPopoverTitle") }}</p>
+                          <div
+                            v-for="mode in FAILURE_MODES"
+                            :key="mode.value"
+                            class="feedback-mode-option"
+                            @click="handleNegativeFeedback(msg, mode.value)"
+                          >
+                            {{ mode.label }}
+                          </div>
+                          <el-button size="small" text class="feedback-skip-btn" @click="handleNegativeFeedback(msg, ''); feedbackPopoverId = null">
+                            {{ t("chat.feedbackSkip") }}
+                          </el-button>
+                        </div>
+                      </el-popover>
                     </div>
                 </div>
             </div>
@@ -165,8 +173,9 @@
                 <div class="chat-input-actions">
                   <div class="input-tip">{{ t("chat.inputTip") }}</div>
                     <div class="input-controls">
+                         <ThemeToggle />
                      <el-tooltip :content="t('chat.clearChat')" placement="top">
-                            <el-button circle size="small" @click="reset" :icon="Close" style="border:none; background:transparent;" />
+                            <el-button circle size="small" @click="reset" :icon="Close" class="clear-btn" />
                          </el-tooltip>
                          <el-select v-model="selectedMode" size="small" class="mode-select">
                              <el-option
@@ -176,7 +185,7 @@
                                :value="mode.value"
                              />
                          </el-select>
-                         <el-select v-model="selectedModel" size="small" style="width: 120px;">
+                         <el-select v-model="selectedModel" size="small" class="model-select">
                              <el-option label="Qwen 2.5" value="ollama" />
                              <el-option label="DeepSeek" value="deepseek" />
                              <el-option label="Gemini" value="gemini" />
@@ -188,21 +197,24 @@
                 </div>
             </div>
           </div>
-      </template>
-
     </main>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick, onMounted } from "vue";
+import { ref, computed, nextTick, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { apiUrl } from "../api/client";
 import { streamSsePost } from "../api/sse";
-import { listAccessibleSpaces } from "../api/docs";
+import { listAccessibleSpaces, openDocPreview } from "../api/docs";
+import { getMyPreferences, updateMyPreferences } from "../api/user";
+import { submitFeedback } from "../api/evaluation";
+import { ElMessage } from "element-plus";
 import { Plus, SwitchButton, Position, Close, Collection } from "@element-plus/icons-vue";
 import { clearAuthSession, getAccessToken, getUsernameFromAccessToken } from "../utils/auth";
 import { useI18n } from "vue-i18n";
+import MarkdownRenderer from "../components/MarkdownRenderer.vue";
+import ThemeToggle from "../components/ThemeToggle.vue";
 
 const router = useRouter();
 const { t } = useI18n();
@@ -212,10 +224,10 @@ const question = ref("");
 const selectedSpaces = ref<string[]>([]);
 const selectedModel = ref("ollama");
 const selectedMode = ref<"rag" | "agent">("rag");
-const modeOptions = [
+const modeOptions = computed(() => [
   { value: "rag", label: t("chat.modeFast") },
   { value: "agent", label: t("chat.modeAgent") },
-];
+]);
 
 type ChatMode = "rag" | "agent";
 type AgentStage =
@@ -233,6 +245,11 @@ type AgentStage =
 
 interface SourceMeta {
   [key: string]: unknown;
+  evidenceId?: string;
+  docUuid?: string;
+  fileName?: string;
+  pageNumber?: number;
+  fileType?: string;
   file_name?: string;
   source?: string;
   doc_uuid?: string;
@@ -263,6 +280,8 @@ interface ChatMessage {
   agentTrace?: AgentTrace;
   followupOptions?: string[];
   followupPending?: boolean;
+  feedback?: "positive" | "negative" | null;
+  failureMode?: string;
 }
 
 type ChatAction =
@@ -282,10 +301,37 @@ const loading = ref(false);
 const spaceOptions = ref<string[]>([]);
 const activeMsgId = ref<string | null>(null);
 const activeController = ref<AbortController | null>(null);
+const feedbackPopoverId = ref<string | null>(null);
+
+const FAILURE_MODES = computed(() => [
+  { value: "short_text_rerank_bias", label: t("evalModes.shortTextRerankBias") },
+  { value: "synonym_mismatch", label: t("evalModes.synonymMismatch") },
+  { value: "chunk_boundary", label: t("evalModes.chunkBoundary") },
+  { value: "multi_document_gap", label: t("evalModes.multiDocumentGap") },
+  { value: "irrelevant_retrieval", label: t("evalModes.irrelevantRetrieval") },
+  { value: "generation_hallucination", label: t("evalModes.generationHallucination") },
+]);
+
+const handlePositiveFeedback = (msg: ChatMessage) => {
+  msg.feedback = "positive";
+  msg.failureMode = undefined;
+  submitFeedback(msg.id, "positive").catch(() => {});
+};
+
+const handleNegativeFeedback = (msg: ChatMessage, mode: string) => {
+  msg.feedback = "negative";
+  msg.failureMode = mode || undefined;
+  feedbackPopoverId.value = null;
+  submitFeedback(msg.id, "negative", mode || undefined).catch(() => {});
+};
 
 onMounted(async () => {
     try {
         spaceOptions.value = await listAccessibleSpaces();
+        const preferences = await getMyPreferences();
+        if (preferences.defaultSpaceCode && spaceOptions.value.includes(preferences.defaultSpaceCode)) {
+          selectedSpaces.value = [preferences.defaultSpaceCode];
+        }
     } catch (e) { console.error(e) }
 });
 
@@ -303,11 +349,35 @@ const scrollBottom = () => {
 };
 
 const formatSourceReference = (source: any) => {
-  const title = source.doc_uuid ? (source.file_name || source.source || t("chat.document")) : t("chat.unknownSource");
-  if (source.page_number) {
-    return t("chat.sourceReferenceWithPage", { title, page: formatPageValue(source.page_number) });
+  const docUuid = source.doc_uuid || source.docUuid;
+  const title = docUuid ? (source.file_name || source.fileName || source.source || t("chat.document")) : t("chat.unknownSource");
+  const page = source.page_number || source.pageNumber;
+  if (page) {
+    return t("chat.sourceReferenceWithPage", { title, page: formatPageValue(page) });
   }
   return t("chat.sourceReferenceWithoutPage", { title });
+};
+
+const openSource = async (source: SourceMeta) => {
+  const docUuid = source.doc_uuid || source.docUuid;
+  if (!docUuid) return;
+  try {
+    await openDocPreview(String(docUuid), source.page_number ?? source.pageNumber);
+  } catch (e) {
+    console.error(e);
+    ElMessage.error(t("chat.previewFailed"));
+  }
+};
+
+const handleSpaceSelectionChange = async (values: string[]) => {
+  if (!values || values.length === 0) {
+    return;
+  }
+  try {
+    await updateMyPreferences({ defaultSpaceCode: values[0] });
+  } catch (e) {
+    console.error(e);
+  }
 };
 
 const formatPageValue = (page: unknown) => {
@@ -345,9 +415,11 @@ const dedupeSources = (rawSources: SourceMeta[]) => {
   const seenFiles = new Set<string>();
 
   rawSources.forEach((s) => {
-    const fileName = String(s.file_name || s.source || s.doc_uuid || "Unknown");
-    if (!seenFiles.has(fileName)) {
-      seenFiles.add(fileName);
+    const docUuid = String(s.doc_uuid || s.docUuid || s.file_name || s.fileName || s.source || "Unknown");
+    const page = String(s.page_number ?? s.pageNumber ?? "");
+    const key = `${docUuid}|${page}`;
+    if (!seenFiles.has(key)) {
+      seenFiles.add(key);
       uniqueSources.push(s);
     }
   });
@@ -615,35 +687,83 @@ const logout = () => {
 </script>
 
 <style scoped>
-/* --- Gemini-like Layout --- */
-
-.chat-shell {
-  display: flex;
-  height: 100vh;
-  background-color: #fff;
-  font-family: 'Google Sans', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+/* --- Extracted Inline Styles --- */
+.kb-selector-title {
+  font-size: 12px;
+  color: var(--chat-text-secondary);
+  margin-bottom: 8px;
+  font-weight: 500;
 }
+.kb-selector-hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 8px;
+}
+.icon-margin {
+  margin-right: 8px;
+}
+.logout-btn {
+  width: 100%;
+  justify-content: flex-start;
+  color: var(--chat-text-secondary);
+}
+.model-select {
+  width: 140px;
+  flex-shrink: 0;
+}
+.mode-select {
+  width: 120px;
+  flex-shrink: 0;
+}
+.assistant-header {
+  display: flex;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+.assistant-icon {
+  margin-right: 12px;
+}
+.assistant-name {
+  font-weight: 600;
+  font-size: 14px;
+  margin-top: 2px;
+  color: var(--chat-text-primary);
+}
+.formatted-content {
+  white-space: pre-wrap;
+  color: var(--chat-text-primary);
+}
+.thinking-content {
+  color: var(--muted);
+  font-style: italic;
+}
+.source-item {
+  font-size: 13px;
+  color: var(--chat-text-secondary);
+  margin-top: 4px;
+}
+.clear-btn {
+  border: none;
+  background: transparent;
+  color: var(--chat-text-primary);
+}
+
+/* --- Gemini-like Layout --- */
+/* Note: .chat-shell, .chat-sidebar, .chat-main are now inherited from base.css */
 
 /* Sidebar */
-.chat-sidebar {
-  width: 260px;
-  background-color: #f0f4f9;
-  display: flex;
-  flex-direction: column;
-  padding: 12px;
-}
 .chat-sidebar-header {
-  padding: 12px;
-  margin-bottom: 20px;
+  padding: 0 12px;
+  margin-bottom: 0px;
 }
 .chat-title {
   font-size: 20px;
   font-weight: 500;
-  color: #1f1f1f;
+  color: var(--chat-text-primary);
 }
 .chat-sub {
   font-size: 12px;
-  color: #444746;
+  color: var(--chat-text-secondary);
   margin-top: 4px;
 }
 
@@ -652,25 +772,25 @@ const logout = () => {
   justify-content: flex-start;
   margin-bottom: 8px;
   border: none;
-  background-color: #dde3ea;
-  color: #1f1f1f;
+  background-color: var(--chat-action-bg);
+  color: var(--chat-text-primary);
   border-radius: 20px; 
   font-weight: 500;
   padding: 20px 16px; 
 }
 .chat-action:hover {
-  background-color: #cdd6e0;
+  background-color: var(--chat-action-hover);
 }
 
 .chat-history {
   flex: 1;
   overflow-y: auto;
-  margin-top: 20px;
+  margin-top: 10px;
 }
 .chat-history-title {
   font-size: 12px;
   font-weight: 500;
-  color: #444746;
+  color: var(--chat-text-secondary);
   margin-bottom: 8px;
   padding-left: 12px;
 }
@@ -678,22 +798,13 @@ const logout = () => {
   padding: 10px 16px;
   border-radius: 18px;
   font-size: 14px;
-  color: #444746;
+  color: var(--chat-text-secondary);
   cursor: pointer;
   margin-bottom: 4px;
   transition: background 0.2s;
 }
 .chat-history-item:hover {
-  background-color: #dde3ea;
-}
-
-/* Main Chat Area */
-.chat-main {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  position: relative;
-  background-color: #fff;
+  background-color: var(--chat-action-bg);
 }
 
 /* --- Initial State --- */
@@ -720,7 +831,7 @@ const logout = () => {
 }
 .greeting-sub {
   font-size: 24px;
-  color: #c4c7c5;
+  color: var(--muted);
   margin-top: 8px;
 }
 
@@ -739,6 +850,9 @@ const logout = () => {
   flex-direction: column;
   align-items: center; 
   scroll-behavior: smooth;
+  background: transparent;
+  border: none;
+  box-shadow: none;
 }
 
 .chat-input-bottom {
@@ -748,9 +862,11 @@ const logout = () => {
   right: 0;
   padding: 20px;
   padding-bottom: 30px;
-  background: linear-gradient(180deg, rgba(255,255,255,0) 0%, rgba(255,255,255,1) 40%);
+  background: linear-gradient(180deg, var(--chat-thread-bg) 0%, var(--chat-thread-bg) 40%);
   display: flex;
   justify-content: center;
+  mask-image: linear-gradient(to bottom, transparent, black 10%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black 10%);
 }
 
 /* --- Reusable Components --- */
@@ -758,7 +874,7 @@ const logout = () => {
 .chat-input-container {
     width: 100%;
     max-width: 800px;
-    background-color: #f0f4f9;
+    background-color: var(--chat-input-bg);
     border-radius: 30px;
     padding: 16px 24px; 
     display: flex;
@@ -766,7 +882,7 @@ const logout = () => {
     transition: background-color 0.2s;
 }
 .chat-input-container:focus-within {
-    background-color: #e9eef6;
+    background-color: var(--chat-input-focus);
 }
 
 .chat-input-textarea {
@@ -778,7 +894,7 @@ const logout = () => {
     font-family: inherit;
     font-size: 16px;
     line-height: 1.5;
-    color: #1f1f1f;
+    color: var(--chat-text-primary);
     min-height: 24px;
     max-height: 200px;
 }
@@ -792,20 +908,21 @@ const logout = () => {
 }
 .input-tip {
     font-size: 12px;
-    color: #444746;
+    color: var(--chat-text-secondary);
 }
 .input-controls {
     display: flex;
     gap: 10px;
     align-items: center;
 }
-.mode-select {
-    width: 120px;
-}
-.send-btn {
-    border-radius: 50%;
-    width: 40px;
-    height: 40px;
+
+@media (max-width: 900px) {
+  .chat-sidebar {
+    display: none;
+  }
+  .greeting-text {
+    font-size: 32px;
+  }
 }
 
 @media (max-width: 720px) {
@@ -821,7 +938,8 @@ const logout = () => {
   }
 
   .mode-select {
-    width: 110px;
+    width: 130px;
+    flex-shrink: 0;
   }
 }
 
@@ -838,8 +956,8 @@ const logout = () => {
   justify-content: flex-end;
 }
 .message-row.user .message-bubble {
-  background-color: #f0f4f9;
-  color: #1f1f1f;
+  background-color: var(--chat-user-bubble);
+  color: var(--chat-text-primary);
   border-radius: 20px;
   padding: 14px 20px;
   max-width: 80%;
@@ -902,8 +1020,8 @@ const logout = () => {
 }
 
 .message-row.assistant .message-bubble {
-  background-color: transparent;
-  color: #1f1f1f;
+  background-color: var(--chat-agent-bubble);
+  color: var(--chat-text-primary);
   border-radius: 0;
   padding: 0; 
   padding-right: 20px;
@@ -915,7 +1033,7 @@ const logout = () => {
 .message-sources {
     margin-top: 16px;
     padding-top: 0;
-    border-top: 1px solid #f0f0f0; /* Softer border */
+    border-top: 1px solid var(--chat-sidebar-border); /* Softer border */
 }
 .agent-trace-block {
     margin-top: 14px;
@@ -936,24 +1054,24 @@ const logout = () => {
     font-weight: 500;
 }
 .agent-stage-pill {
-    background: #e8f0fe;
-    color: #1a73e8;
+    background: var(--chat-pill-bg);
+    color: var(--chat-pill-text);
 }
 .agent-revised-badge {
-    background: #eef7e8;
-    color: #3b7a1c;
+    background: var(--chat-revised-bg);
+    color: var(--chat-revised-text);
 }
 .agent-trace-panel {
     margin-top: 10px;
-    background: #f8fafc;
-    border: 1px solid #e5eaf3;
+    background: var(--chat-trace-bg);
+    border: 1px solid var(--chat-trace-border);
     border-radius: 14px;
     padding: 10px 14px;
 }
 .agent-trace-panel summary {
     cursor: pointer;
     font-size: 13px;
-    color: #444746;
+    color: var(--chat-text-secondary);
     font-weight: 500;
 }
 .agent-trace-log {
@@ -965,11 +1083,11 @@ const logout = () => {
 }
 .agent-log-stage {
     flex: 0 0 auto;
-    color: #1a73e8;
+    color: var(--chat-pill-text);
     font-weight: 600;
 }
 .agent-log-text {
-    color: #444746;
+    color: var(--chat-text-secondary);
 }
 .followup-options {
     display: flex;
@@ -987,7 +1105,7 @@ const logout = () => {
 .sources-title {
     font-size: 13px;
     font-weight: 500;
-    color: #444746;
+    color: var(--chat-text-secondary);
     margin-bottom: 8px;
 }
 .sources-list {
@@ -997,5 +1115,73 @@ const logout = () => {
 }
 .source-tag {
     cursor: pointer;
+}
+
+/* Feedback */
+.message-feedback {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--chat-sidebar-border);
+}
+
+.feedback-hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin-right: 4px;
+}
+
+.feedback-thumb {
+  font-size: 16px;
+  cursor: pointer;
+  opacity: 0.35;
+  transition: opacity 0.2s, transform 0.15s;
+  user-select: none;
+  padding: 2px;
+}
+
+.feedback-thumb:hover {
+  opacity: 0.7;
+  transform: scale(1.15);
+}
+
+.feedback-thumb.active {
+  opacity: 1;
+}
+
+.feedback-popover-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0 0 10px;
+}
+
+.feedback-mode-option {
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  border-radius: 8px;
+  transition: background 0.15s;
+}
+
+.feedback-mode-option:hover {
+  background: var(--chat-input-focus);
+}
+
+.feedback-skip-btn {
+  margin-top: 8px;
+  width: 100%;
+  color: var(--muted);
+}
+</style>
+
+<style>
+.feedback-popover-popper {
+  padding: 12px 0 !important;
+  border-radius: 14px !important;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.12) !important;
 }
 </style>

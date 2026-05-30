@@ -80,4 +80,11 @@ public class SysUserController {
                 .subscribeOn(Schedulers.boundedElastic())
                 .thenReturn(AjaxResult.success("Department updated successfully", null));
     }
+
+    @PutMapping("/{id}/default-space")
+    public Mono<AjaxResult> updateDefaultSpace(@PathVariable String id, @RequestBody Map<String, String> body) {
+        return Mono.fromRunnable(() -> sysUserService.updateDefaultSpace(id, body.get("defaultSpaceCode")))
+                .subscribeOn(Schedulers.boundedElastic())
+                .thenReturn(AjaxResult.success("Default space updated successfully", null));
+    }
 }

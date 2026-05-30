@@ -30,6 +30,14 @@ public class TracingSupport {
         applyTags(span, tags);
     }
 
+    public String getCurrentTraceId() {
+        Tracer tracer = tracerProvider.getIfAvailable();
+        if (tracer == null) return null;
+        Span span = tracer.currentSpan();
+        if (span == null) return null;
+        return span.context().traceId();
+    }
+
     public <T> Mono<T> traceMono(String name, Map<String, ?> tags, Mono<T> publisher) {
         return Mono.defer(() -> {
             Span span = startSpan(name, tags);

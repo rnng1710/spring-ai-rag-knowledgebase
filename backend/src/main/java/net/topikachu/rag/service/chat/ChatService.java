@@ -6,6 +6,7 @@ import net.topikachu.rag.auth.SearchScope;
 import net.topikachu.rag.evaluation.ContextNode;
 import net.topikachu.rag.evaluation.EvaluationConfig;
 import net.topikachu.rag.evaluation.EvaluationResultItem;
+import net.topikachu.rag.evaluation.service.EvaluationPersistenceService;
 import net.topikachu.rag.observability.TracingSupport;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategy;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategyFactory;
@@ -23,8 +24,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
-
 /**
  * Chat service with hybrid search (dense + sparse) and reranking.
  */
@@ -33,12 +32,14 @@ import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 public class ChatService {
 
     private final ChatMemory chatMemory;
-    private final HybridSearchService hybridSearchService;
-    private final RerankService rerankService;
+    private final RetrievalPipeline retrievalPipeline;
+    private final ContextFormatter contextFormatter;
     private final ChatModelStrategyFactory strategyFactory;
     private final ReactiveChatGateway reactiveChatGateway;
     private final TracingSupport tracingSupport;
     private final MessageChatMemoryAdvisor messageChatMemoryAdvisor;
+    private final EvaluationPersistenceService persistenceService;
+    private final UsedSourceValidator usedSourceValidator;
 
     @Value("${rag.retrieval.hybrid-topk:20}")
     private int hybridTopK;
@@ -50,38 +51,37 @@ public class ChatService {
     private int maxContextChars;
 
     public ChatService(ChatMemory chatMemory,
-            HybridSearchService hybridSearchService, RerankService rerankService,
+            RetrievalPipeline retrievalPipeline,
+            ContextFormatter contextFormatter,
             ChatModelStrategyFactory strategyFactory,
             ReactiveChatGateway reactiveChatGateway,
-            TracingSupport tracingSupport) {
+            TracingSupport tracingSupport,
+            EvaluationPersistenceService persistenceService,
+            UsedSourceValidator usedSourceValidator) {
         this.chatMemory = chatMemory;
-        this.hybridSearchService = hybridSearchService;
-        this.rerankService = rerankService;
+        this.retrievalPipeline = retrievalPipeline;
+        this.contextFormatter = contextFormatter;
         this.strategyFactory = strategyFactory;
         this.reactiveChatGateway = reactiveChatGateway;
         this.tracingSupport = tracingSupport;
+        this.persistenceService = persistenceService;
+        this.usedSourceValidator = usedSourceValidator;
 
         this.messageChatMemoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory).build();
     }
 
-    public record ChatStreamResponse(Flux<String> flux, List<Document> sources) {
+    public record ChatStreamResponse(Flux<String> flux, List<UsedSource> usedSources) {
     }
 
     public Mono<List<Document>> retrieveForEvaluation(String query, boolean useSparseSearch, boolean useRerank, int topK) {
         int fetchK = useRerank ? hybridTopK : topK;
-        return hybridSearchService.hybridSearch(query, null, SearchScope.empty(), fetchK, useSparseSearch)
-                .flatMap(candidates -> {
-                    if (useRerank) {
-                        return rerankService.rerank(query, candidates, topK);
-                    }
-                    return Mono.just(candidates.stream().limit(topK).toList());
-                });
+        return retrievalPipeline.retrieve(query, fetchK, topK, useSparseSearch, useRerank);
     }
 
     // TODO:: 精确计算token消耗量
     public Mono<ChatStreamResponse> streamWithSources(String userInput, String conversationId,
             CurrentUserContext currentUserContext, SearchScope searchScope,
-            String modelId) {
+            String modelId, String msgId) {
         log.info("Processing query: '{}', conversationId: {}, spaces: {}, tags: {}, modelId: {}, user={}",
                 userInput, conversationId,
                 searchScope == null ? List.of() : searchScope.requestedSpaceCodes(),
@@ -89,53 +89,83 @@ public class ChatService {
                 modelId,
                 currentUserContext == null ? null : currentUserContext.username());
 
-        long searchStart = System.currentTimeMillis();
-        Map<String, Object> traceTags = Map.of(
-                "chat.mode", "rag",
-                "chat.model_id", modelId == null ? "" : modelId,
-                "chat.conversation_id", conversationId,
-                "rag.filter_tags", searchScope == null ? "" : String.join(",", searchScope.requestedTags()),
-                "rag.requested_spaces", searchScope == null ? "" : String.join(",", searchScope.requestedSpaceCodes()));
+        String traceId = tracingSupport.getCurrentTraceId();
 
-        return tracingSupport.traceMono("rag.hybrid_search", traceTags,
-                        hybridSearchService.hybridSearch(userInput, currentUserContext, searchScope, hybridTopK))
-                .doOnNext(candidates -> log.debug("Hybrid search returned {} candidates in {}ms",
-                        candidates.size(), System.currentTimeMillis() - searchStart))
-                .doOnError(error -> log.error("Retrieval stage failed for query='{}', conversationId={}",
-                        userInput, conversationId, error))
-                .flatMap(candidates -> {
-                    long rerankStart = System.currentTimeMillis();
-                    return tracingSupport.traceMono("rag.rerank",
-                                    Map.of(
-                                            "chat.mode", "rag",
-                                            "chat.model_id", modelId == null ? "" : modelId,
-                                            "rag.candidate_count", candidates.size(),
-                                            "rag.rerank_topk", rerankTopK),
-                                    rerankService.rerank(userInput, candidates, rerankTopK))
-                            .doOnNext(docs -> log.debug("Rerank returned {} docs in {}ms",
-                                    docs.size(), System.currentTimeMillis() - rerankStart));
-                })
+        return retrievalPipeline.retrieve(userInput, currentUserContext, searchScope, hybridTopK, rerankTopK,
+                        Map.of(
+                                "chat.mode", "rag",
+                                "chat.model_id", modelId == null ? "" : modelId,
+                                "chat.conversation_id", conversationId == null ? "" : conversationId))
                 .flatMap(docs -> tracingSupport.traceMono("rag.context_build",
                                 Map.of(
                                         "chat.mode", "rag",
                                         "chat.model_id", modelId == null ? "" : modelId,
                                         "rag.source_count", docs.size(),
                                         "rag.max_context_chars", maxContextChars),
-                                Mono.fromSupplier(() -> buildContext(docs)))
-                        .map(context -> {
-                    // 3. Build Context with length limit to prevent LLM context overflow
-                    // 4. Resolve the strategy and stream response
-                    ChatModelStrategy strategy = strategyFactory.getStrategy(modelId);
-                    Flux<String> flux = reactiveChatGateway.stream(
-                            strategy.getChatClient(),
-                            strategy.getSystemPromptTemplate(),
-                            Map.of("context", context),
-                            userInput,
-                            conversationId,
-                            messageChatMemoryAdvisor);
+                                Mono.fromSupplier(() -> contextFormatter.format(docs)))
+                        .flatMap(context -> {
+                            ChatModelStrategy strategy = strategyFactory.getStrategy(modelId);
+                            return reactiveChatGateway.callStructured(
+                                            strategy.getChatClient(),
+                                            buildSourcedAnswerPrompt(),
+                                            Map.of("context", context),
+                                            userInput,
+                                            conversationId,
+                                            messageChatMemoryAdvisor,
+                                            SourcedAnswerResult.class)
+                                    .onErrorMap(this::toSourceValidationError)
+                                    .map(result -> {
+                                        List<UsedSource> usedSources = usedSourceValidator.validate(result, docs);
+                                        String answer = result.answer();
+                                        persistenceService.saveConversation(
+                                                msgId, conversationId, currentUserContext.userId(),
+                                                userInput, answer, modelId, "rag",
+                                                toContextNodes(docs), usedSources, traceId)
+                                                .subscribe();
+                                        return new ChatStreamResponse(Flux.just(answer), usedSources);
+                                    });
+                        }));
+    }
 
-                    return new ChatStreamResponse(flux, docs);
-                }));
+    static String buildSourcedAnswerPrompt() {
+        return """
+                你是一个专业的“校园智能知识库问答助手”。你必须基于【知识库上下文】回答。
+
+                必须遵守：
+                1. 只能使用【知识库上下文】中的事实，不得编造或外推。
+                2. 如果知识库证据不足，answerType 输出 refusal，answer 简洁说明无法可靠回答，usedSources 输出 []。
+                3. 如果输出事实性回答，answerType 输出 factual，usedSources 至少包含一个来源。
+                4. 每个事实段落或列表项末尾必须带引用，格式为《文件名》第 X 页；没有页码时用《文件名》。
+                5. 每个事实段落或列表项最多展示 2 个引用。
+                6. usedSources 必须是字符串数组；每个字符串都是上下文中的 evidence_id，不能创造新的 evidenceId。
+                7. 你必须且只能输出合法 JSON 对象，不要输出 Markdown 代码块或额外文字。
+                8. JSON 字段固定为 answer、answerType、usedSources。
+                9. answer 必填且不能为空；answerType 只能是 factual 或 refusal。
+                10. usedSources 只输出字符串数组，例如 ["docUuid:1:0:hash"]；不要输出对象数组，不要输出 docUuid、fileName、pageNumber、fileType。
+                11. 输出必须是单个 JSON object；第一个字符是英文左花括号，最后一个字符是英文右花括号。
+                12. factual 时 answerType=factual，answer 中必须包含段落引用，usedSources 必须列出实际采用的 evidenceId。
+                13. refusal 时 answerType=refusal，answer 说明当前知识库没有足够信息，usedSources 必须是空数组。
+                14. 不要输出内部思考、解释、代码块或 JSON 之外的任何文字。
+
+                ================ 知识库上下文 ================
+                {context}
+                ============================================
+                """;
+    }
+
+    private Throwable toSourceValidationError(Throwable error) {
+        if (error instanceof SourceValidationException) {
+            return error;
+        }
+        if (error instanceof IllegalArgumentException
+                && error.getMessage() != null
+                && error.getMessage().contains("structured")) {
+            log.warn("Structured RAG response parse failed: {}. Cause: {}",
+                    error.getMessage(),
+                    error.getCause() != null ? error.getCause().getMessage() : "no cause");
+            return new SourceValidationException(UsedSourceValidator.UNRELIABLE_SOURCE_MESSAGE, "json_parse_failed");
+        }
+        return error;
     }
 
     /**
@@ -258,40 +288,14 @@ public class ChatService {
         }
     }
 
-    private String buildContext(List<Document> docs) {
-        StringBuilder contextBuilder = new StringBuilder();
-        for (int i = 0; i < docs.size(); i++) {
-            Document doc = docs.get(i);
-            Map<String, Object> metadata = doc.getMetadata();
-            String filename = (String) metadata.getOrDefault("file_name", "Unknown Source");
-            Object page = metadata.getOrDefault("page_number", metadata.get("page"));
-            String pageLabel = (page == null) ? ("片段" + (i + 1)) : ("第" + formatPageValue(page) + "页");
-
-            String structuredEntry = String.format(
-                    """
-                                    【%s】(来源: %s)
-                                    内容: %s
-                                    ------------------------
-                                    """,
-                    pageLabel, filename, doc.getText());
-
-            if (contextBuilder.length() + structuredEntry.length() > maxContextChars) {
-                log.warn("Context limit reached, dropping remaining documents from rank {}", i);
-                break;
-            }
-            contextBuilder.append(structuredEntry);
+    private List<ContextNode> toContextNodes(List<Document> docs) {
+        List<ContextNode> nodes = new ArrayList<>();
+        for (Document doc : docs) {
+            String fileName = (String) doc.getMetadata().getOrDefault("file_name", "Unknown File");
+            Object scoreObj = doc.getMetadata().get("score");
+            Double score = (scoreObj instanceof Number) ? ((Number) scoreObj).doubleValue() : 0.0;
+            nodes.add(new ContextNode(doc.getText(), fileName, score));
         }
-        return contextBuilder.toString();
-    }
-
-    private String formatPageValue(Object page) {
-        if (page instanceof Number number) {
-            double value = number.doubleValue();
-            if (Math.rint(value) == value) {
-                return Long.toString((long) value);
-            }
-            return Double.toString(value);
-        }
-        return page.toString();
+        return nodes;
     }
 }

@@ -2,11 +2,15 @@ package net.topikachu.rag.service.chat;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.extern.slf4j.Slf4j;
 import net.topikachu.rag.observability.TracingSupport;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.openai.api.ResponseFormat;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
@@ -18,11 +22,15 @@ import java.util.Map;
 
 import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 
+@Slf4j
 @Component
 public class ReactiveChatGateway {
 
     private final TracingSupport tracingSupport;
     private final ObjectMapper objectMapper;
+
+    @Value("${rag.llm.log-raw-response:true}")
+    private boolean logRawResponse;
 
     public ReactiveChatGateway(TracingSupport tracingSupport, ObjectMapper objectMapper) {
         this.tracingSupport = tracingSupport;
@@ -58,13 +66,26 @@ public class ReactiveChatGateway {
                                       Map<String, Object> systemParams,
                                       String userText,
                                       Class<T> responseType) {
+        return callStructured(chatClient, systemText, systemParams, userText, null, null, responseType);
+    }
+
+    public <T> Mono<T> callStructured(ChatClient chatClient,
+                                      String systemText,
+                                      Map<String, Object> systemParams,
+                                      String userText,
+                                      String conversationId,
+                                      MessageChatMemoryAdvisor chatMemoryAdvisor,
+                                      Class<T> responseType) {
         return tracingSupport.traceMono("llm.chat_call_structured",
                 Map.of(
+                        "llm.conversation_id", conversationId == null ? "" : conversationId,
                         "llm.prompt_chars", systemText == null ? 0 : systemText.length(),
                         "llm.user_chars", userText == null ? 0 : userText.length()),
-                Mono.fromCallable(() -> buildPrompt(chatClient, systemText, systemParams, userText, null, null)
+                Mono.fromCallable(() -> buildPrompt(chatClient, systemText, systemParams, userText, conversationId, chatMemoryAdvisor)
+                                .options(jsonObjectOptions())
                                 .call()
                                 .content())
+                        .doOnNext(raw -> logRawStructuredResponse(conversationId, responseType, raw))
                         .map(raw -> decodeStructuredResponse(raw, responseType, objectMapper))
                         .subscribeOn(Schedulers.boundedElastic()));
     }
@@ -85,6 +106,7 @@ public class ReactiveChatGateway {
                         Mono.fromCallable(() -> buildPrompt(chatClient, systemText, systemParams, messages, advisors, toolCallbacks, toolContext)
                                 .call()
                                 .content())
+                                .doOnNext(raw -> logRawToolResponse(responseType, raw))
                                 .map(raw -> decodeStructuredResponse(raw, responseType, objectMapper)));
     }
 
@@ -168,24 +190,62 @@ public class ReactiveChatGateway {
         });
     }
 
+    private <T> void logRawStructuredResponse(String conversationId, Class<T> responseType, String raw) {
+        if (!logRawResponse) {
+            return;
+        }
+        log.info("[LLM-RAW-STRUCTURED] conversationId={}, responseType={}, raw={}",
+                conversationId == null ? "" : conversationId,
+                responseType == null ? "" : responseType.getSimpleName(),
+                raw);
+    }
+
+    private <T> void logRawToolResponse(Class<T> responseType, String raw) {
+        if (!logRawResponse) {
+            return;
+        }
+        log.info("[LLM-RAW-TOOL] responseType={}, raw={}",
+                responseType == null ? "" : responseType.getSimpleName(),
+                raw);
+    }
+
     static <T> T decodeStructuredResponse(String raw, Class<T> responseType, ObjectMapper objectMapper) {
         if (raw == null || raw.isBlank()) {
             throw new IllegalArgumentException("LLM returned blank structured response.");
         }
 
+        // Step 1: try parsing the raw response directly
         try {
             return objectMapper.readValue(raw, responseType);
-        } catch (JsonProcessingException firstError) {
-            String extractedJson = extractStructuredJson(raw);
-            if (extractedJson != null) {
-                try {
-                    return objectMapper.readValue(extractedJson, responseType);
-                } catch (JsonProcessingException ignored) {
-                    throw new IllegalArgumentException("Could not parse structured tool-phase response.", firstError);
-                }
-            }
-            throw new IllegalArgumentException("Could not parse structured tool-phase response.", firstError);
+        } catch (JsonProcessingException ignored) {
+            // fall through to step 2
         }
+
+        // Step 2: strip <think> tags (DeepSeek reasoning models) and retry
+        String stripped = stripThinkTags(raw);
+        if (!stripped.equals(raw)) {
+            try {
+                return objectMapper.readValue(stripped, responseType);
+            } catch (JsonProcessingException ignored) {
+                // fall through to step 3
+            }
+        }
+
+        // Step 3: extract JSON from markdown fences or bare text
+        String extractedJson = extractStructuredJson(stripped);
+        if (extractedJson != null) {
+            try {
+                return objectMapper.readValue(extractedJson, responseType);
+            } catch (JsonProcessingException e) {
+                log.debug("Structured response parse failed after extraction. Raw (first 500 chars): {}",
+                        raw.substring(0, Math.min(raw.length(), 500)));
+                throw new IllegalArgumentException("Could not parse structured tool-phase response.", e);
+            }
+        }
+
+        log.debug("No JSON object found in structured response. Raw (first 500 chars): {}",
+                raw.substring(0, Math.min(raw.length(), 500)));
+        throw new IllegalArgumentException("Could not parse structured tool-phase response.");
     }
 
     static String extractStructuredJson(String raw) {
@@ -258,5 +318,27 @@ public class ReactiveChatGateway {
             }
         }
         return -1;
+    }
+
+    /**
+     * Strip DeepSeek reasoning model's {@code <think>...</think>} blocks from LLM output.
+     * These tags may appear even when the model is instructed not to output reasoning.
+     */
+    static String stripThinkTags(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        return raw.replaceAll("(?s)<think>.*?</think>", "").trim();
+    }
+
+    /**
+     * Build {@link OpenAiChatOptions} with {@code response_format: {type: "json_object"}}.
+     * Works for all OpenAI-compatible APIs (DeepSeek, Ollama, etc.).
+     * For non-OpenAI models (e.g. Gemini via Google GenAI), this option is silently ignored.
+     */
+    private static OpenAiChatOptions jsonObjectOptions() {
+        return OpenAiChatOptions.builder()
+                .responseFormat(new ResponseFormat(ResponseFormat.Type.JSON_OBJECT, ""))
+                .build();
     }
 }

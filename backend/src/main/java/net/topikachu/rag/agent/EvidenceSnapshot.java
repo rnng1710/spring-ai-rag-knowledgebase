@@ -16,8 +16,11 @@ public record EvidenceSnapshot(
 
     public static EvidenceSnapshot fromDocument(Document document) {
         Objects.requireNonNull(document, "document must not be null");
+        Object evidenceId = document.getMetadata().get("evidence_id");
         return new EvidenceSnapshot(
-                document.getId(),
+                evidenceId == null || evidenceId.toString().isBlank()
+                        ? document.getId()
+                        : evidenceId.toString(),
                 document.getText(),
                 deepImmutableCopy(document.getMetadata()));
     }

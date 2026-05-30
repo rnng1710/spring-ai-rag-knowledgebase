@@ -4,18 +4,24 @@ import lombok.extern.slf4j.Slf4j;
 import net.topikachu.rag.auth.CurrentUserContext;
 import net.topikachu.rag.auth.SearchScope;
 import net.topikachu.rag.ai.memory.BlockingChatMemoryService;
+import net.topikachu.rag.evaluation.ContextNode;
+import net.topikachu.rag.evaluation.service.EvaluationPersistenceService;
+import net.topikachu.rag.observability.TracingSupport;
+import net.topikachu.rag.service.chat.ContextFormatter;
 import net.topikachu.rag.service.chat.ReactiveChatGateway;
+import net.topikachu.rag.service.chat.UsedSource;
+import net.topikachu.rag.service.chat.UsedSourceValidator;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategy;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategyFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -30,22 +36,31 @@ public class AgentChatService {
     private final ReactiveChatGateway reactiveChatGateway;
     private final ConversationExecutionGuard conversationExecutionGuard;
     private final AgentTurnStateStore agentTurnStateStore;
-
-    @Value("${rag.retrieval.max-context-chars:8000}")
-    private int maxContextChars;
+    private final EvaluationPersistenceService persistenceService;
+    private final TracingSupport tracingSupport;
+    private final ContextFormatter contextFormatter;
+    private final UsedSourceValidator usedSourceValidator;
 
     public AgentChatService(AgentExecutor executor,
                             ChatModelStrategyFactory strategyFactory,
                             BlockingChatMemoryService blockingChatMemoryService,
                             ReactiveChatGateway reactiveChatGateway,
                             ConversationExecutionGuard conversationExecutionGuard,
-                            AgentTurnStateStore agentTurnStateStore) {
+                            AgentTurnStateStore agentTurnStateStore,
+                            EvaluationPersistenceService persistenceService,
+                            TracingSupport tracingSupport,
+                            ContextFormatter contextFormatter,
+                            UsedSourceValidator usedSourceValidator) {
         this.executor = executor;
         this.strategyFactory = strategyFactory;
         this.blockingChatMemoryService = blockingChatMemoryService;
         this.reactiveChatGateway = reactiveChatGateway;
         this.conversationExecutionGuard = conversationExecutionGuard;
         this.agentTurnStateStore = agentTurnStateStore;
+        this.persistenceService = persistenceService;
+        this.tracingSupport = tracingSupport;
+        this.contextFormatter = contextFormatter;
+        this.usedSourceValidator = usedSourceValidator;
     }
 
     public Flux<ServerSentEvent<Object>> streamEvents(String userInput,
@@ -60,6 +75,8 @@ public class AgentChatService {
                 searchScope == null ? List.of() : searchScope.requestedTags(),
                 modelId,
                 currentUserContext == null ? null : currentUserContext.username());
+
+        String traceId = tracingSupport.getCurrentTraceId();
 
         return Mono.fromCallable(() -> conversationExecutionGuard.acquire(conversationId))
                 .subscribeOn(Schedulers.boundedElastic())
@@ -88,11 +105,18 @@ public class AgentChatService {
                                 }
 
                                 List<EvidenceSnapshot> sources = result.sources();
+                                List<UsedSource> usedSources = usedSourceValidator.fromDocuments(sources.stream()
+                                        .map(source -> org.springframework.ai.document.Document.builder()
+                                                .id(source.id())
+                                                .text(source.text())
+                                                .metadata(source.metadataSnapshot())
+                                                .build())
+                                        .toList());
                                 ChatModelStrategy strategy = strategyFactory.getStrategy(modelId);
 
                                 Map<String, Object> sourcePayload = new LinkedHashMap<>();
                                 sourcePayload.put("msgId", msgId);
-                                sourcePayload.put("sources", sources.stream().map(EvidenceSnapshot::metadataSnapshot).toList());
+                                sourcePayload.put("sources", usedSources);
                                 Flux<ServerSentEvent<Object>> sourceEvent = Flux.just(buildEvent("sources", sourcePayload));
 
                                 StringBuilder finalAnswerBuffer = new StringBuilder();
@@ -109,6 +133,11 @@ public class AgentChatService {
                                     if (finalAnswer.isBlank()) {
                                         return Mono.error(new IllegalStateException("Final answer is blank"));
                                     }
+                                    persistenceService.saveConversation(
+                                            msgId, conversationId, currentUserContext.userId(),
+                                            userInput, finalAnswer, modelId, "agent",
+                                            toContextNodes(sources), usedSources, traceId)
+                                            .subscribe();
                                     return blockingChatMemoryService.add(conversationId, List.of(
                                                     new UserMessage(userInput),
                                                     new AssistantMessage(finalAnswer)))
@@ -142,7 +171,7 @@ public class AgentChatService {
                     userInput);
         }
 
-        String context = buildContext(sources);
+        String context = contextFormatter.format(sources, EvidenceSnapshot::text, EvidenceSnapshot::metadataSnapshot);
         return reactiveChatGateway.streamFinalAnswer(
                 strategy.getChatClient(),
                 buildAnswerPrompt(),
@@ -176,42 +205,6 @@ public class AgentChatService {
                 buildEvent("done", Map.of("msgId", msgId)));
     }
 
-    private String buildContext(List<EvidenceSnapshot> docs) {
-        StringBuilder contextBuilder = new StringBuilder();
-        for (int i = 0; i < docs.size(); i++) {
-            EvidenceSnapshot doc = docs.get(i);
-            Map<String, Object> metadata = doc.metadataSnapshot();
-            String filename = String.valueOf(metadata.getOrDefault("file_name", "Unknown Source"));
-            Object page = metadata.getOrDefault("page_number", metadata.get("page"));
-            String pageLabel = (page == null) ? ("片段" + (i + 1)) : ("第" + formatPageValue(page) + "页");
-
-            String structuredEntry = String.format(
-                    """
-                                    【%s】(来源: %s)
-                                    内容: %s
-                                    ------------------------
-                                    """,
-                    pageLabel, filename, doc.text());
-
-            if (contextBuilder.length() + structuredEntry.length() > maxContextChars) {
-                break;
-            }
-            contextBuilder.append(structuredEntry);
-        }
-        return contextBuilder.toString();
-    }
-
-    private String formatPageValue(Object page) {
-        if (page instanceof Number number) {
-            double value = number.doubleValue();
-            if (Math.rint(value) == value) {
-                return Long.toString((long) value);
-            }
-            return Double.toString(value);
-        }
-        return page.toString();
-    }
-
     private String buildAnswerPrompt() {
         return """
                 你是一个专业的“校园智能知识库问答助手”。你的核心职责是基于提供的【知识库上下文】内容回答问题。
@@ -223,7 +216,9 @@ public class AgentChatService {
                 4. 不得把未出现在上下文中的结论写入最终答案。
                 5. 若上下文不足，请明确说明根据已知文档无法确定。
                 6. 只有在上下文提供真实页码时，才能输出【第X页】；没有真实页码时，不得编造页码。
-                7. 回答保持专业、直接、简洁，不输出内部思考过程。
+                7. 每个事实段落或列表项末尾必须带引用，格式为《文件名》第X页；没有页码时使用《文件名》。
+                8. 每个事实段落或列表项最多展示 2 个引用。
+                9. 回答保持专业、直接、简洁，不输出内部思考过程。
 
                 ================ 知识库上下文 ================
                 {context}
@@ -282,5 +277,16 @@ public class AgentChatService {
                 .event(event)
                 .data(data)
                 .build();
+    }
+
+    private List<ContextNode> toContextNodes(List<EvidenceSnapshot> sources) {
+        List<ContextNode> nodes = new ArrayList<>();
+        for (EvidenceSnapshot source : sources) {
+            String fileName = String.valueOf(source.metadataSnapshot().getOrDefault("file_name", "Unknown File"));
+            Object scoreObj = source.metadataSnapshot().get("score");
+            Double score = (scoreObj instanceof Number) ? ((Number) scoreObj).doubleValue() : 0.0;
+            nodes.add(new ContextNode(source.text(), fileName, score));
+        }
+        return nodes;
     }
 }

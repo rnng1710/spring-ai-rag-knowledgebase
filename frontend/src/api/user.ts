@@ -8,6 +8,7 @@ export interface User {
   role: UserRole;
   deptId?: string | null;
   deptName?: string | null;
+  defaultSpaceCode?: string | null;
   enabled: boolean;
 }
 
@@ -17,6 +18,7 @@ export interface CreateUserRequest {
   role: UserRole;
   deptId?: string;
   deptName?: string;
+  defaultSpaceCode?: string;
 }
 
 interface ApiEnvelope<T> {
@@ -90,6 +92,33 @@ export const resetUserPassword = async (id: string | number, newPassword: string
 
 export const updateUserDepartment = async (id: string | number, payload: { deptId?: string; deptName?: string }) => {
   const res = await authFetch(apiUrl(`${USERS_BASE}/${encodeURIComponent(String(id))}/department`), {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+  return await parseEnvelope<void>(res);
+};
+
+export const updateUserDefaultSpace = async (id: string | number, defaultSpaceCode: string) => {
+  const res = await authFetch(apiUrl(`${USERS_BASE}/${encodeURIComponent(String(id))}/default-space`), {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ defaultSpaceCode })
+  });
+  return await parseEnvelope<void>(res);
+};
+
+export const getMyPreferences = async () => {
+  const res = await authFetch(apiUrl("/api/v1/auth/me/preferences"));
+  return await parseEnvelope<{ defaultSpaceCode: string }>(res);
+};
+
+export const updateMyPreferences = async (payload: { defaultSpaceCode: string }) => {
+  const res = await authFetch(apiUrl("/api/v1/auth/me/preferences"), {
     method: "PUT",
     headers: {
       "Content-Type": "application/json"

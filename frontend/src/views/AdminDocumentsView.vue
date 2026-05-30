@@ -141,7 +141,7 @@
       </el-tabs>
       <template #footer>
       <el-button @click="dialogVisible = false">{{ t("common.cancel") }}</el-button>
-      <el-button type="primary" :loading="uploading" @click="submitUpload">{{ t("common.upload") }}</el-button>
+      <el-button type="primary" :loading="uploading" :disabled="!canSubmitUpload" @click="submitUpload">{{ t("common.upload") }}</el-button>
       </template>
       
       <!-- Upload Log Area -->
@@ -180,7 +180,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, reactive } from "vue";
+import { computed, ref, onMounted, onUnmounted, reactive } from "vue";
 import { Search, Refresh, Plus, Delete } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
@@ -240,6 +240,22 @@ const permissionForm = reactive({
   isPublic: true
 });
 
+const canSubmitUpload = computed(() => {
+  if (uploading.value) {
+    return false;
+  }
+  if (activeTab.value === "single") {
+    return singleFile.value !== null;
+  }
+  if (activeTab.value === "batch") {
+    return batchFiles.value.length > 0;
+  }
+  if (activeTab.value === "folder") {
+    return folderFiles.value.length > 0;
+  }
+  return false;
+});
+
 // --- Lifecycle ---
 onMounted(async () => {
   await Promise.all([loadData(), loadTags()]);
@@ -282,7 +298,7 @@ const loadData = async (showLoading = true) => {
   try {
     const res = await listDocs(pagination.current, pagination.size, query.keyword);
     tableData.value = res.records;
-    pagination.total = res.total;
+    pagination.total = Number(res.total ?? tableData.value.length ?? 0);
   } catch (e: any) {
     ElMessage.error(e.message || t("docs.loadFailed"));
   } finally {

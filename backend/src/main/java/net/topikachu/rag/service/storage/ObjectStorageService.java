@@ -1,16 +1,18 @@
 package net.topikachu.rag.service.storage;
 
-import java.nio.file.Path;
+import reactor.core.publisher.Mono;
+
 import java.io.InputStream;
+import java.nio.file.Path;
 
 public interface ObjectStorageService {
-    void putObject(String objectKey, Path source, String contentType);
+    Mono<Void> putObject(String objectKey, Path source, String contentType);
 
-    Path downloadToTempFile(String objectKey, String fileName);
+    Mono<Path> downloadToTempFile(String objectKey, String fileName);
 
-    InputStream getObject(String objectKey);
+    Mono<InputStream> getObject(String objectKey);
 
-    void deleteObject(String objectKey);
+    Mono<Void> deleteObject(String objectKey);
 
-    boolean exists(String objectKey);
+    Mono<Boolean> exists(String objectKey);
 }

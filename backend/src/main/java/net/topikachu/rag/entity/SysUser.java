@@ -46,6 +46,11 @@ public class SysUser extends BaseEntity {
     private String deptName;
 
     /**
+     * Default knowledge space for chat retrieval
+     */
+    private String defaultSpaceCode;
+
+    /**
      * Account status
      */
     private Boolean enabled = true;

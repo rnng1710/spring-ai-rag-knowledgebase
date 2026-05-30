@@ -8,7 +8,9 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.util.StringUtils;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -83,6 +85,39 @@ public class AuthController {
                             .onErrorResume(e -> Mono.just(AjaxResult.error(400, e.getMessage())));
                 })
                 .onErrorResume(e -> Mono.just(AjaxResult.error(401, e.getMessage())));
+    }
+
+    @GetMapping("/me/preferences")
+    @PreAuthorize("hasAnyRole('USER', 'ADMIN')")
+    public Mono<AjaxResult> getPreferences(Mono<Principal> principalMono) {
+        return principalMono.switchIfEmpty(Mono.error(new IllegalStateException("Unauthorized")))
+                .flatMap(principal -> Mono.fromCallable(() -> {
+                            var user = sysUserService.findByUsername(principal.getName());
+                            if (user == null) {
+                                throw new IllegalArgumentException("User not found");
+                            }
+                            return AjaxResult.success(Map.of(
+                                    "defaultSpaceCode",
+                                    user.getDefaultSpaceCode() == null ? "" : user.getDefaultSpaceCode()));
+                        })
+                        .subscribeOn(Schedulers.boundedElastic()))
+                .onErrorResume(e -> Mono.just(AjaxResult.error(401, e.getMessage())));
+    }
+
+    @PutMapping("/me/preferences")
+    @PreAuthorize("hasAnyRole('USER', 'ADMIN')")
+    public Mono<AjaxResult> updatePreferences(@RequestBody Map<String, String> body, Mono<Principal> principalMono) {
+        return principalMono.switchIfEmpty(Mono.error(new IllegalStateException("Unauthorized")))
+                .flatMap(principal -> Mono.fromRunnable(() -> {
+                            var user = sysUserService.findByUsername(principal.getName());
+                            if (user == null) {
+                                throw new IllegalArgumentException("User not found");
+                            }
+                            sysUserService.updateDefaultSpace(user.getId(), body.get("defaultSpaceCode"));
+                        })
+                        .subscribeOn(Schedulers.boundedElastic())
+                        .thenReturn(AjaxResult.success("Preferences updated successfully", null)))
+                .onErrorResume(e -> Mono.just(AjaxResult.error(400, e.getMessage())));
     }
 
     @PostMapping("/refresh")
