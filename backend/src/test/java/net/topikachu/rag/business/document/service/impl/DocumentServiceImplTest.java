@@ -8,6 +8,7 @@ import net.topikachu.rag.business.document.service.EtlJobService;
 import net.topikachu.rag.business.document.vo.UploadResult;
 import net.topikachu.rag.observability.TracingSupport;
 import net.topikachu.rag.service.etl.DocumentChunkMetadataBuilder;
+import net.topikachu.rag.service.etl.KnowledgeParentBlockService;
 import net.topikachu.rag.service.etl.MilvusWriteGateway;
 import net.topikachu.rag.service.storage.ObjectStorageService;
 import org.junit.jupiter.api.BeforeEach;
@@ -38,6 +39,7 @@ class DocumentServiceImplTest {
     private TracingSupport tracingSupport;
     private ObjectStorageService objectStorageService;
     private EtlJobService etlJobService;
+    private KnowledgeParentBlockService parentBlockService;
     private PlatformTransactionManager transactionManager;
     private DocumentServiceImpl service;
 
@@ -47,6 +49,7 @@ class DocumentServiceImplTest {
         tracingSupport = mock(TracingSupport.class);
         objectStorageService = mock(ObjectStorageService.class);
         etlJobService = mock(EtlJobService.class);
+        parentBlockService = mock(KnowledgeParentBlockService.class);
         transactionManager = mock(PlatformTransactionManager.class);
 
         service = new DocumentServiceImpl(
@@ -56,6 +59,7 @@ class DocumentServiceImplTest {
                 mock(DocumentChunkMetadataBuilder.class),
                 mock(KnowledgeAclRefreshTaskMapper.class),
                 etlJobService,
+                parentBlockService,
                 transactionManager,
                 objectStorageService);
 
@@ -73,6 +77,8 @@ class DocumentServiceImplTest {
                 .thenReturn(Mono.empty());
         when(objectStorageService.exists(anyString()))
                 .thenReturn(Mono.just(true));
+        when(parentBlockService.deleteByDocUuid(anyString()))
+                .thenReturn(Mono.empty());
         Path stubFile = tempDir.resolve("stub.txt");
         Files.write(stubFile, "stub".getBytes());
         when(objectStorageService.getObject(anyString()))
@@ -301,7 +307,7 @@ class DocumentServiceImplTest {
         DocumentServiceImpl failService = new DocumentServiceImpl(
                 documentMapper, tracingSupport, mock(MilvusWriteGateway.class),
                 mock(DocumentChunkMetadataBuilder.class), mock(KnowledgeAclRefreshTaskMapper.class),
-                failEtlJobService, transactionManager, failOss);
+                failEtlJobService, parentBlockService, transactionManager, failOss);
         ReflectionTestUtils.setField(failService, "inputDirectory", tempDir.toString());
         ReflectionTestUtils.setField(failService, "allowedExt", "pdf,doc,docx,txt,md");
         ReflectionTestUtils.setField(failService, "maxSizeBytes", 52428800L);

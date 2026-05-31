@@ -78,6 +78,41 @@ class UsedSourceValidatorTest {
     }
 
     @Test
+    void usesCanonicalPdfPageRangeLocation() {
+        Document candidate = new Document("content", Map.of(
+                "evidence_id", "ev-1",
+                "doc_uuid", "doc-1",
+                "file_name", "handbook.pdf",
+                "page_start", 3,
+                "page_end", 4));
+        SourcedAnswerResult result = new SourcedAnswerResult("answer", "factual", List.of("ev-1"));
+
+        List<UsedSource> usedSources = validator.validate(result, List.of(candidate));
+
+        assertEquals("3-4", usedSources.get(0).pageNumber());
+    }
+
+    @Test
+    void collapsesNonPdfSourcesByParentIndexSegment() {
+        Document first = new Document("first", Map.of(
+                "evidence_id", "ev-1",
+                "doc_uuid", "doc-1",
+                "file_name", "policy.docx",
+                "parent_index", 4));
+        Document second = new Document("second", Map.of(
+                "evidence_id", "ev-2",
+                "doc_uuid", "doc-1",
+                "file_name", "policy.docx",
+                "parent_index", 4));
+        SourcedAnswerResult result = new SourcedAnswerResult("answer", "factual", List.of("ev-1", "ev-2"));
+
+        List<UsedSource> usedSources = validator.validate(result, List.of(first, second));
+
+        assertEquals(1, usedSources.size());
+        assertEquals("片段4", usedSources.get(0).pageNumber());
+    }
+
+    @Test
     void rejectsMissingAnswerWithReason() {
         SourcedAnswerResult result = new SourcedAnswerResult("", "factual", List.of("ev-1"));
 

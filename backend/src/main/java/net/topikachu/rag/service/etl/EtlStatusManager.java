@@ -21,15 +21,18 @@ public class EtlStatusManager {
 
     private final DocumentMapper documentMapper;
     private final HybridVectorWriter hybridVectorWriter;
+    private final KnowledgeParentBlockService parentBlockService;
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
 
     public EtlStatusManager(DocumentMapper documentMapper,
                             HybridVectorWriter hybridVectorWriter,
+                            KnowledgeParentBlockService parentBlockService,
                             StringRedisTemplate redisTemplate,
                             ObjectMapper objectMapper) {
         this.documentMapper = documentMapper;
         this.hybridVectorWriter = hybridVectorWriter;
+        this.parentBlockService = parentBlockService;
         this.redisTemplate = redisTemplate;
         this.objectMapper = objectMapper;
     }
@@ -99,6 +102,11 @@ public class EtlStatusManager {
                                     log.warn("Vector cleanup failed for {}: {}", docUuid, ex.getMessage());
                                     return Mono.empty();
                                 })
+                                .then(parentBlockService.deleteByDocUuid(docUuid)
+                                        .onErrorResume(ex -> {
+                                            log.warn("Parent block cleanup failed for {}: {}", docUuid, ex.getMessage());
+                                            return Mono.empty();
+                                        }))
                                 .then(Mono.fromRunnable(() -> sendRedisMessage(docUuid, userId, DocumentStatus.FAILED, userMsg)))
                                 .thenReturn(true);
                     }

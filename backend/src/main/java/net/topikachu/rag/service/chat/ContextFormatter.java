@@ -13,11 +13,40 @@ import java.util.function.Function;
 @Slf4j
 public class ContextFormatter {
 
-    @Value("${rag.retrieval.max-context-chars:8000}")
+    @Value("${rag.retrieval.max-context-chars:40000}")
     private int maxContextChars;
 
     public String format(List<Document> docs) {
         return format(docs, Document::getText, Document::getMetadata);
+    }
+
+    public String formatParentContexts(List<ParentContextBlock> parentContexts) {
+        StringBuilder contextBuilder = new StringBuilder();
+        for (int i = 0; i < parentContexts.size(); i++) {
+            ParentContextBlock block = parentContexts.get(i);
+            String structuredEntry = String.format(
+                    """
+                                    【上下文块 %d】
+                                    来源: %s
+                                    parent_block_id: %s
+                                    可引用 evidence_id:
+                                    %s
+                                    内容: %s
+                                    ------------------------
+                                    """,
+                    i + 1,
+                    sourceLabel(block),
+                    block.parentBlockId(),
+                    formatEvidenceIds(block.evidenceIds()),
+                    block.content());
+
+            if (contextBuilder.length() + structuredEntry.length() > maxContextChars) {
+                log.warn("Parent context limit reached, dropping remaining parent blocks from rank {}", i);
+                break;
+            }
+            contextBuilder.append(structuredEntry);
+        }
+        return contextBuilder.toString();
     }
 
     public <T> String format(List<T> docs,
@@ -59,5 +88,25 @@ public class ContextFormatter {
             return Double.toString(value);
         }
         return page.toString();
+    }
+
+    private String sourceLabel(ParentContextBlock block) {
+        String filename = block.fileName() == null ? "Unknown Source" : block.fileName();
+        if (block.pageStart() != null && block.pageEnd() != null) {
+            if (block.pageStart().equals(block.pageEnd())) {
+                return filename + " · 第" + block.pageStart() + "页";
+            }
+            return filename + " · 第" + block.pageStart() + "-" + block.pageEnd() + "页";
+        }
+        return filename + " · 片段" + block.parentIndex();
+    }
+
+    private String formatEvidenceIds(List<String> evidenceIds) {
+        if (evidenceIds == null || evidenceIds.isEmpty()) {
+            return "- 无";
+        }
+        return evidenceIds.stream()
+                .map(id -> "- " + id)
+                .collect(java.util.stream.Collectors.joining(System.lineSeparator()));
     }
 }

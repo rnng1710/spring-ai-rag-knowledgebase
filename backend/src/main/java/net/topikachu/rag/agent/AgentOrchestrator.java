@@ -4,6 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import net.topikachu.rag.auth.CurrentUserContext;
 import net.topikachu.rag.auth.SearchScope;
 import net.topikachu.rag.observability.TracingSupport;
+import net.topikachu.rag.service.chat.ParentContextBlock;
 import net.topikachu.rag.service.chat.ReactiveChatGateway;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategy;
 import org.springframework.ai.chat.client.advisor.ToolCallAdvisor;
@@ -147,6 +148,7 @@ public class AgentOrchestrator {
             FollowupSuggestion suggestion = resolveFollowupSuggestion(executionContext);
             return new AgentExecutionResult(
                     List.of(),
+                    List.of(),
                     sortNotes(executionContext.notes()),
                     suggestion.prompt(),
                     suggestion.options(),
@@ -159,6 +161,7 @@ public class AgentOrchestrator {
         if ("refusal".equals(answerMode)) {
             executionContext.addNote(AgentStage.GENERATING_FINAL, "decision", "知识库无法回答该问题，返回拒答说明。");
             return new AgentExecutionResult(
+                    List.of(),
                     List.of(),
                     sortNotes(executionContext.notes()),
                     null,
@@ -174,10 +177,13 @@ public class AgentOrchestrator {
             executionContext.addNote(AgentStage.FOLLOWUP, "decision", "模型未选中有效证据，回退为点击式追问。");
             return noEvidenceFollowup(executionContext);
         }
+        List<ParentContextBlock> selectedParentContexts =
+                executionContext.selectParentContextsForEvidence(resolution.selectedEvidenceIds());
 
         executionContext.addNote(AgentStage.GENERATING_FINAL, "decision", "已完成证据选择，准备生成最终答案。");
         return new AgentExecutionResult(
                 List.copyOf(selectedEvidence),
+                selectedParentContexts,
                 sortNotes(executionContext.notes()),
                 null,
                 List.of(),
@@ -190,6 +196,7 @@ public class AgentOrchestrator {
     private AgentExecutionResult noEvidenceFollowup(AgentExecutionContext executionContext) {
         FollowupSuggestion suggestion = resolveFollowupSuggestion(executionContext);
         return new AgentExecutionResult(
+                List.of(),
                 List.of(),
                 sortNotes(executionContext.notes()),
                 suggestion.prompt(),
@@ -336,8 +343,8 @@ public class AgentOrchestrator {
     private String toolPhasePrompt() {
         return """
                 你是校园知识库问答系统中的证据编排代理。你的职责是：
-                1. 如有需要，主动调用工具检索知识库片段证据。
-                2. 只能把工具返回 status=ok 的 items 视为候选证据。
+                1. 如有需要，主动调用工具检索知识库父级上下文块。
+                2. 只能把工具返回 status=ok 的 items 视为候选上下文。
                 3. tool_error、no_result 不能作为事实依据。
                 4. 当证据不足且可通过缩小检索范围改善时，应调用 generateFollowupOptions。
                 5. 当知识库本身无法回答当前问题时，直接返回 type=answer，answerMode=refusal。
@@ -349,7 +356,7 @@ public class AgentOrchestrator {
                    - answerMode: normal 或 refusal；仅当 type=answer 时使用
                    - draftAnswer: 第二阶段使用的回答草稿，可为空
                    - finalInstruction: 第二阶段的修订或收口指令，可为空
-                   - selectedEvidenceIds: 字符串数组，只能从工具返回的片段 id 中选择
+                   - selectedEvidenceIds: 字符串数组，只能从工具 items[].citableEvidenceIds 中选择
                 10. 标准输出示例如下。你必须严格按照这个 JSON 结构输出，不能增减字段，不能输出任何额外文字：
                     \\{
                       "type": "followup",
@@ -359,11 +366,13 @@ public class AgentOrchestrator {
                       "selectedEvidenceIds": []
                     \\}
                 11. 如果 type=followup，不要在 JSON 中输出追问文案，追问候选问题由 generateFollowupOptions 工具提供。
-                12. 如果 type=answer 且 answerMode=normal，selectedEvidenceIds 必须只选择真正需要的证据子集。
+                12. 如果 type=answer 且 answerMode=normal，selectedEvidenceIds 必须只选择真正需要的 child evidence_id 子集。
                 13. 如果 type=answer 且 answerMode=refusal，也必须输出同样结构的 JSON，只是把 answerMode 设为 refusal。
                 14. 不要把未选中的证据事实写入 draftAnswer 或 finalInstruction。
                 15. 如果用户已经预选标签，请优先尊重这些标签。
                 16. 如果用户已经限制空间范围，所有检索都只能在这些空间内继续收窄，不能越权扩大。
+                17. 工具返回的 parentBlockId 只是上下文块编号，不是可引用证据；不得写入 selectedEvidenceIds。
+                18. draftAnswer/finalInstruction 可以基于 parent text，但引用边界必须落到已选择的 child evidence_id。
 
                 当前预选标签：
                 {preselectedTags}

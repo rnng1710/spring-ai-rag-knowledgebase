@@ -5,15 +5,7 @@
         <div class="chat-title">{{ t("common.appName") }}</div>
         <div class="chat-sub">{{ t("chat.signedInAs", { username }) }}</div>
       </div>
-      
-      <div class="kb-selector" style="margin-bottom: 20px; padding: 0 12px;">
-         <div class="kb-selector-title">{{ t("chat.spaceScope") }}</div>
-         <el-select v-model="selectedSpaces" :placeholder="t('chat.selectSpaces')" size="small" multiple clearable collapse-tags collapse-tags-tooltip @change="handleSpaceSelectionChange">
-            <template #prefix><el-icon><Collection /></el-icon></template>
-            <el-option v-for="space in spaceOptions" :key="space" :label="space" :value="space" />
-          </el-select>
-         <div class="kb-selector-hint">{{ t("chat.defaultSpaceHint") }}</div>
-      </div>
+
 
       <el-button class="chat-action" @click="reset">
         <el-icon class="icon-margin"><Plus /></el-icon> {{ t("chat.newChat") }}
@@ -177,7 +169,13 @@
                      <el-tooltip :content="t('chat.clearChat')" placement="top">
                             <el-button circle size="small" @click="reset" :icon="Close" class="clear-btn" />
                          </el-tooltip>
-                         <el-select v-model="selectedMode" size="small" class="mode-select">
+                         <el-tooltip :content="t('chat.defaultSpaceHint')" placement="top">
+                             <el-select v-model="selectedSpaces" :placeholder="t('chat.selectSpaces')" size="default" multiple clearable collapse-tags collapse-tags-tooltip @change="handleSpaceSelectionChange" class="space-select">
+                                <template #prefix><el-icon><Collection /></el-icon></template>
+                                <el-option v-for="space in spaceOptions" :key="space" :label="space" :value="space" />
+                              </el-select>
+                         </el-tooltip>
+                         <el-select v-model="selectedMode" size="default" class="mode-select">
                              <el-option
                                v-for="mode in modeOptions"
                                :key="mode.value"
@@ -185,7 +183,7 @@
                                :value="mode.value"
                              />
                          </el-select>
-                         <el-select v-model="selectedModel" size="small" class="model-select">
+                         <el-select v-model="selectedModel" size="default" class="model-select">
                              <el-option label="Qwen 2.5" value="ollama" />
                              <el-option label="DeepSeek" value="deepseek" />
                              <el-option label="Gemini" value="gemini" />
@@ -331,6 +329,11 @@ onMounted(async () => {
         const preferences = await getMyPreferences();
         if (preferences.defaultSpaceCode && spaceOptions.value.includes(preferences.defaultSpaceCode)) {
           selectedSpaces.value = [preferences.defaultSpaceCode];
+        } else if (spaceOptions.value.includes('public')) {
+          selectedSpaces.value = ['public'];
+          updateMyPreferences({ defaultSpaceCode: 'public' }).catch(console.error);
+        } else {
+          selectedSpaces.value = ['public'];
         }
     } catch (e) { console.error(e) }
 });
@@ -353,6 +356,9 @@ const formatSourceReference = (source: any) => {
   const title = docUuid ? (source.file_name || source.fileName || source.source || t("chat.document")) : t("chat.unknownSource");
   const page = source.page_number || source.pageNumber;
   if (page) {
+    if (isSegmentLocation(page)) {
+      return t("chat.sourceReferenceWithSegment", { title, segment: String(page) });
+    }
     return t("chat.sourceReferenceWithPage", { title, page: formatPageValue(page) });
   }
   return t("chat.sourceReferenceWithoutPage", { title });
@@ -362,7 +368,8 @@ const openSource = async (source: SourceMeta) => {
   const docUuid = source.doc_uuid || source.docUuid;
   if (!docUuid) return;
   try {
-    await openDocPreview(String(docUuid), source.page_number ?? source.pageNumber);
+    const page = source.page_number ?? source.pageNumber;
+    await openDocPreview(String(docUuid), isSegmentLocation(page) ? undefined : page);
   } catch (e) {
     console.error(e);
     ElMessage.error(t("chat.previewFailed"));
@@ -391,6 +398,10 @@ const formatPageValue = (page: unknown) => {
     }
   }
   return String(page);
+};
+
+const isSegmentLocation = (page: unknown) => {
+  return typeof page === "string" && page.startsWith("片段");
 };
 
 const stageLabel = (stage: AgentStage) => {
@@ -706,6 +717,10 @@ const logout = () => {
   width: 100%;
   justify-content: flex-start;
   color: var(--chat-text-secondary);
+}
+.space-select {
+  width: 200px;
+  flex-shrink: 0;
 }
 .model-select {
   width: 140px;

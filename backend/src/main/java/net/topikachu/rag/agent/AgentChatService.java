@@ -171,7 +171,7 @@ public class AgentChatService {
                     userInput);
         }
 
-        String context = contextFormatter.format(sources, EvidenceSnapshot::text, EvidenceSnapshot::metadataSnapshot);
+        String context = contextFormatter.formatParentContexts(result.parentContexts());
         return reactiveChatGateway.streamFinalAnswer(
                 strategy.getChatClient(),
                 buildAnswerPrompt(),

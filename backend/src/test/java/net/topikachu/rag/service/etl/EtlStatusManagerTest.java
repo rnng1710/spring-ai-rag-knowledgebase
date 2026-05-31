@@ -38,6 +38,7 @@ class EtlStatusManagerTest {
 
     private net.topikachu.rag.business.document.mapper.DocumentMapper documentMapper;
     private HybridVectorWriter hybridVectorWriter;
+    private KnowledgeParentBlockService parentBlockService;
     private StringRedisTemplate redisTemplate;
     private ObjectMapper objectMapper;
     private EtlStatusManager statusManager;
@@ -46,9 +47,11 @@ class EtlStatusManagerTest {
     void setUp() {
         documentMapper = mock(net.topikachu.rag.business.document.mapper.DocumentMapper.class);
         hybridVectorWriter = mock(HybridVectorWriter.class);
+        parentBlockService = mock(KnowledgeParentBlockService.class);
         redisTemplate = mock(StringRedisTemplate.class);
         objectMapper = new ObjectMapper();
-        statusManager = new EtlStatusManager(documentMapper, hybridVectorWriter, redisTemplate, objectMapper);
+        statusManager = new EtlStatusManager(documentMapper, hybridVectorWriter, parentBlockService, redisTemplate, objectMapper);
+        when(parentBlockService.deleteByDocUuid(anyString())).thenReturn(Mono.empty());
     }
 
     // -- transitionTo --
@@ -115,6 +118,7 @@ class EtlStatusManagerTest {
         assertTrue(result);
         verify(documentMapper).update(isNull(), any());
         verify(hybridVectorWriter).deleteByDocUuid("doc-1");
+        verify(parentBlockService).deleteByDocUuid("doc-1");
         verify(redisTemplate).convertAndSend(eq("topic:etl-status"), anyString());
     }
 

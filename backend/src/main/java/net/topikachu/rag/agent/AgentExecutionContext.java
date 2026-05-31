@@ -1,5 +1,7 @@
 package net.topikachu.rag.agent;
 
+import net.topikachu.rag.service.chat.ParentContextBlock;
+
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -23,6 +25,7 @@ public class AgentExecutionContext {
     private final AtomicInteger toolCalls = new AtomicInteger();
     private final AtomicInteger searchInvocationCount = new AtomicInteger();
     private final Map<String, EvidenceSnapshot> retrievedEvidence = new LinkedHashMap<>();
+    private final Map<String, ParentContextBlock> retrievedParentContexts = new LinkedHashMap<>();
     private final Map<String, Integer> repeatedQueryCounts = new LinkedHashMap<>();
     private final List<RetrievalHistoryEntry> retrievalHistory = new ArrayList<>();
     private final List<AgentNote> notes = new ArrayList<>();
@@ -120,12 +123,63 @@ public class AgentExecutionContext {
         return List.copyOf(selected);
     }
 
+    public synchronized void addRetrievedParentContexts(List<ParentContextBlock> contexts) {
+        if (contexts == null) {
+            return;
+        }
+        for (ParentContextBlock context : contexts) {
+            if (context == null || context.parentBlockId() == null || context.parentBlockId().isBlank()) {
+                continue;
+            }
+            retrievedParentContexts.putIfAbsent(context.parentBlockId(), context);
+        }
+    }
+
+    public synchronized List<ParentContextBlock> selectParentContextsForEvidence(List<String> selectedEvidenceIds) {
+        if (selectedEvidenceIds == null || selectedEvidenceIds.isEmpty()) {
+            return List.of();
+        }
+        Set<String> selectedIds = selectedEvidenceIds.stream()
+                .filter(id -> id != null && !id.isBlank())
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        if (selectedIds.isEmpty()) {
+            return List.of();
+        }
+
+        List<ParentContextBlock> selectedContexts = new ArrayList<>();
+        for (ParentContextBlock context : retrievedParentContexts.values()) {
+            List<String> citableEvidenceIds = context.evidenceIds() == null
+                    ? List.of()
+                    : context.evidenceIds().stream()
+                    .filter(selectedIds::contains)
+                    .toList();
+            if (citableEvidenceIds.isEmpty()) {
+                continue;
+            }
+            selectedContexts.add(new ParentContextBlock(
+                    context.parentBlockId(),
+                    context.docUuid(),
+                    context.fileName(),
+                    context.content(),
+                    context.parentIndex(),
+                    context.pageStart(),
+                    context.pageEnd(),
+                    citableEvidenceIds,
+                    context.rank()));
+        }
+        return List.copyOf(selectedContexts);
+    }
+
     public synchronized List<AgentNote> notes() {
         return List.copyOf(notes);
     }
 
     public synchronized List<EvidenceSnapshot> retrievedEvidence() {
         return List.copyOf(retrievedEvidence.values());
+    }
+
+    public synchronized List<ParentContextBlock> retrievedParentContexts() {
+        return List.copyOf(retrievedParentContexts.values());
     }
 
     public synchronized List<RetrievalHistoryEntry> retrievalHistory() {

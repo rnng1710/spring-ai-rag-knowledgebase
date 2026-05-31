@@ -2,17 +2,21 @@ package net.topikachu.rag.agent;
 
 import net.topikachu.rag.auth.CurrentUserContext;
 import net.topikachu.rag.auth.SearchScope;
+import net.topikachu.rag.service.chat.ParentContextBlock;
+import net.topikachu.rag.service.chat.ParentContextMissingException;
 import net.topikachu.rag.service.chat.ReactiveChatGateway;
+import net.topikachu.rag.service.chat.RetrievalResult;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategy;
-import org.springframework.ai.document.Document;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -80,7 +84,7 @@ public class AgentKnowledgeTools {
                 maxRepeatedQueryCount);
     }
 
-    @Tool(name = "searchKnowledgeSnippets", description = "在知识库中检索与问题相关的片段级证据。tagsAnyOf 表示任一标签命中，不是全部标签同时命中。仅当需要证据时调用。")
+    @Tool(name = "searchKnowledgeSnippets", description = "在知识库中检索与问题相关的父级上下文块。tagsAnyOf 表示任一标签命中，不是全部标签同时命中。selectedEvidenceIds 只能选择返回的 citableEvidenceIds，不能选择 parentBlockId。")
     public KnowledgeSearchResult searchKnowledgeSnippets(
             @ToolParam(description = "检索请求，包含 query、tagsAnyOf、topK。")
             KnowledgeSearchRequest request) {
@@ -123,7 +127,7 @@ public class AgentKnowledgeTools {
 
         try {
             SearchScope effectiveSearchScope = baseSearchScope.mergeRequestedTags(request.tagsAnyOf());
-            List<Document> documents = toolBridge.block(
+            RetrievalResult retrievalResult = toolBridge.block(
                     knowledgeService.searchKnowledgeSnippets(
                             request.query(),
                             currentUserContext,
@@ -131,7 +135,11 @@ public class AgentKnowledgeTools {
                             request.topK()),
                     timeout,
                     "searchKnowledgeSnippets");
-            if (documents.isEmpty()) {
+            if (retrievalResult == null
+                    || retrievalResult.childCandidates() == null
+                    || retrievalResult.childCandidates().isEmpty()
+                    || retrievalResult.parentContexts() == null
+                    || retrievalResult.parentContexts().isEmpty()) {
                 executionContext.recordRetrieval(
                         request.query(),
                         normalizedQueryKey,
@@ -148,27 +156,68 @@ public class AgentKnowledgeTools {
                 return KnowledgeSearchResult.noResult();
             }
 
-            List<EvidenceSnapshot> evidence = documents.stream()
+            List<EvidenceSnapshot> evidence = retrievalResult.childCandidates().stream()
                     .map(EvidenceSnapshot::fromDocument)
                     .limit(maxEvidenceCount)
                     .toList();
+            Set<String> availableEvidenceIds = evidence.stream()
+                    .map(EvidenceSnapshot::id)
+                    .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+            List<ParentContextBlock> parentContexts = filterParentContexts(
+                    retrievalResult.parentContexts(),
+                    availableEvidenceIds);
+            if (parentContexts.isEmpty()) {
+                executionContext.recordRetrieval(
+                        request.query(),
+                        normalizedQueryKey,
+                        normalizeTags(request.tagsAnyOf()),
+                        request.topK(),
+                        "no_result",
+                        0,
+                        List.of());
+                executionContext.updateRetrievalAssessment(
+                        RetrievalGapType.MISSING_SCOPE,
+                        true,
+                        List.of("scope", "time"));
+                executionContext.addNote(AgentStage.RETRIEVING, "tool_result", "未检索到可引用的父级上下文块。");
+                return KnowledgeSearchResult.noResult();
+            }
             executionContext.addRetrievedEvidence(evidence, maxEvidenceCount);
-            List<String> evidenceIds = evidence.stream().map(EvidenceSnapshot::id).toList();
+            executionContext.addRetrievedParentContexts(parentContexts);
+            List<String> evidenceIds = parentContexts.stream()
+                    .flatMap(context -> context.evidenceIds().stream())
+                    .distinct()
+                    .toList();
             executionContext.recordRetrieval(
                     request.query(),
                     normalizedQueryKey,
                     normalizeTags(request.tagsAnyOf()),
                     request.topK(),
                     "ok",
-                    evidence.size(),
+                    parentContexts.size(),
                     evidenceIds);
-            applyRetrievalAssessment(request.query(), evidence.size());
-            executionContext.addNote(AgentStage.RETRIEVING, "tool_result", "已检索到 " + evidence.size() + " 条候选证据。");
+            applyRetrievalAssessment(request.query(), parentContexts.size());
+            executionContext.addNote(AgentStage.RETRIEVING, "tool_result", "已检索到 " + parentContexts.size() + " 个父级上下文块。");
 
-            List<KnowledgeSnippet> items = evidence.stream()
-                    .map(snapshot -> new KnowledgeSnippet(snapshot.id(), snapshot.text(), snapshot.metadataSnapshot()))
+            List<KnowledgeSnippet> items = parentContexts.stream()
+                    .map(context -> new KnowledgeSnippet(
+                            context.parentBlockId(),
+                            context.content(),
+                            context.evidenceIds(),
+                            parentMetadata(context)))
                     .toList();
             return KnowledgeSearchResult.ok(items);
+        } catch (ParentContextMissingException error) {
+            executionContext.recordRetrieval(
+                    request.query(),
+                    normalizedQueryKey,
+                    normalizeTags(request.tagsAnyOf()),
+                    request.topK(),
+                    "tool_error",
+                    0,
+                    List.of());
+            executionContext.addNote(AgentStage.RETRIEVING, "tool_error", "知识库索引数据不一致，需要重建文档索引。");
+            return KnowledgeSearchResult.toolError("INDEX_REBUILD_REQUIRED", sanitizeError(error));
         } catch (Exception error) {
             executionContext.recordRetrieval(
                     request.query(),
@@ -424,22 +473,74 @@ public class AgentKnowledgeTools {
     }
 
     private String summarizeRetrievedEvidence() {
-        if (executionContext.retrievedEvidence().isEmpty()) {
+        if (executionContext.retrievedParentContexts().isEmpty()) {
             return "无";
         }
         StringBuilder builder = new StringBuilder();
         int index = 1;
-        for (EvidenceSnapshot snapshot : executionContext.retrievedEvidence()) {
+        for (ParentContextBlock context : executionContext.retrievedParentContexts()) {
             builder.append(index++)
-                    .append(". id=")
-                    .append(snapshot.id())
+                    .append(". parentBlockId=")
+                    .append(context.parentBlockId())
                     .append("; metadata=")
-                    .append(snapshot.metadataSnapshot())
+                    .append(parentMetadata(context))
+                    .append("; citableEvidenceIds=")
+                    .append(context.evidenceIds())
                     .append("; text=")
-                    .append(abbreviate(snapshot.text(), 220))
+                    .append(abbreviate(context.content(), 220))
                     .append(System.lineSeparator());
         }
         return builder.toString().trim();
+    }
+
+    private List<ParentContextBlock> filterParentContexts(List<ParentContextBlock> contexts,
+                                                          Set<String> availableEvidenceIds) {
+        if (contexts == null || contexts.isEmpty() || availableEvidenceIds == null || availableEvidenceIds.isEmpty()) {
+            return List.of();
+        }
+        List<ParentContextBlock> filtered = new ArrayList<>();
+        for (ParentContextBlock context : contexts) {
+            List<String> citableEvidenceIds = context.evidenceIds() == null
+                    ? List.of()
+                    : context.evidenceIds().stream()
+                    .filter(availableEvidenceIds::contains)
+                    .toList();
+            if (citableEvidenceIds.isEmpty()) {
+                continue;
+            }
+            filtered.add(new ParentContextBlock(
+                    context.parentBlockId(),
+                    context.docUuid(),
+                    context.fileName(),
+                    context.content(),
+                    context.parentIndex(),
+                    context.pageStart(),
+                    context.pageEnd(),
+                    citableEvidenceIds,
+                    context.rank()));
+        }
+        return List.copyOf(filtered);
+    }
+
+    private Map<String, Object> parentMetadata(ParentContextBlock context) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        putIfNotNull(metadata, "doc_uuid", context.docUuid());
+        putIfNotNull(metadata, "file_name", context.fileName());
+        putIfNotNull(metadata, "parent_index", context.parentIndex());
+        metadata.put("rank", context.rank());
+        if (context.pageStart() != null) {
+            metadata.put("page_start", context.pageStart());
+        }
+        if (context.pageEnd() != null) {
+            metadata.put("page_end", context.pageEnd());
+        }
+        return Map.copyOf(metadata);
+    }
+
+    private void putIfNotNull(Map<String, Object> metadata, String key, Object value) {
+        if (value != null) {
+            metadata.put(key, value);
+        }
     }
 
     private String abbreviate(String text, int maxLength) {

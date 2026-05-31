@@ -39,6 +39,13 @@ public class DocumentChunkMetadataBuilder {
 
         copyIfPresent(currentChunkMetadata, metadata, "page_number");
         copyIfPresent(currentChunkMetadata, metadata, "page");
+        copyIfPresent(currentChunkMetadata, metadata, "page_start");
+        copyIfPresent(currentChunkMetadata, metadata, "page_end");
+        copyIfPresent(currentChunkMetadata, metadata, "parent_block_id");
+        copyIfPresent(currentChunkMetadata, metadata, "parent_index");
+        copyIfPresent(currentChunkMetadata, metadata, "child_index");
+        copyIfPresent(currentChunkMetadata, metadata, "evidence_id");
+        copyIfPresent(currentChunkMetadata, metadata, "chunk_schema_version");
         return metadata;
     }
 

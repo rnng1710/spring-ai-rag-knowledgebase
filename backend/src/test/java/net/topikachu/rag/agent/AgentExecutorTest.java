@@ -1,6 +1,7 @@
 package net.topikachu.rag.agent;
 
 import net.topikachu.rag.observability.TracingSupport;
+import net.topikachu.rag.auth.SearchScope;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategy;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategyFactory;
 import org.junit.jupiter.api.BeforeEach;
@@ -50,6 +51,7 @@ class AgentExecutorTest {
         AgentExecutionResult expected = new AgentExecutionResult(
                 List.of(),
                 List.of(),
+                List.of(),
                 "请继续检索",
                 List.of("问题一？", "问题二？"),
                 null,
@@ -57,7 +59,7 @@ class AgentExecutorTest {
                 "normal",
                 false);
 
-        when(agentOrchestrator.orchestrate(strategy, "问题", "conv-1", "msg-1", List.of("tag1")))
+        when(agentOrchestrator.orchestrate(strategy, "问题", "conv-1", "msg-1", null, new SearchScope(List.of(), List.of("tag1"))))
                 .thenReturn(Mono.just(expected));
 
         AgentExecutionResult result = agentExecutor.execute("问题", "conv-1", "msg-1", List.of("tag1"), "ollama")
@@ -65,6 +67,6 @@ class AgentExecutorTest {
 
         org.junit.jupiter.api.Assertions.assertSame(expected, result);
         verify(strategyFactory).getStrategy("ollama");
-        verify(agentOrchestrator).orchestrate(strategy, "问题", "conv-1", "msg-1", List.of("tag1"));
+        verify(agentOrchestrator).orchestrate(strategy, "问题", "conv-1", "msg-1", null, new SearchScope(List.of(), List.of("tag1")));
     }
 }

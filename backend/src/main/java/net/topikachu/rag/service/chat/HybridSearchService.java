@@ -10,6 +10,7 @@ import io.milvus.v2.service.vector.request.ranker.RRFRanker;
 import lombok.extern.slf4j.Slf4j;
 import net.topikachu.rag.auth.CurrentUserContext;
 import net.topikachu.rag.auth.SearchScope;
+import net.topikachu.rag.service.etl.KnowledgeParentBlockService;
 import net.topikachu.rag.service.etl.TeiEmbeddingClient;
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Value;
@@ -136,6 +137,7 @@ public class HybridSearchService {
 
     private String buildFilterExpr(CurrentUserContext currentUserContext, SearchScope searchScope) {
         List<String> clauses = new java.util.ArrayList<>();
+        clauses.add("metadata[\"chunk_schema_version\"] == " + KnowledgeParentBlockService.CHUNK_SCHEMA_VERSION);
         String accessClause = buildAccessClause(currentUserContext);
         if (StringUtils.hasText(accessClause)) {
             clauses.add("(" + accessClause + ")");

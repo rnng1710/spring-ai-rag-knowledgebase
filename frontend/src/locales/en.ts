@@ -79,6 +79,7 @@ const en = {
     document: "Document",
     thinking: "Thinking...",
     sourceReferenceWithPage: "Referenced from \"{title}\", page {page}",
+    sourceReferenceWithSegment: "Referenced from \"{title}\", {segment}",
     sourceReferenceWithoutPage: "Referenced from \"{title}\"",
     unknownSource: "Unknown Source",
     errorPrefix: "Error",

@@ -65,3 +65,12 @@ AGENTS.md
 CLAUDE.md
 backend/sql/20260429_acl_metadata_refresh.sql
 backend/sql/20260507_object_storage.sql
+.codex/
+.codex-tmp/
+.playwright-mcp/
+backend/sql/
+docs/
+CONTEXT.md
+start-all.bat
+replace_grid.js
+replace.js

@@ -26,6 +26,7 @@ import net.topikachu.rag.business.document.vo.UploadResult;
 import net.topikachu.rag.observability.TracingSupport;
 import net.topikachu.rag.service.etl.DocumentChunkMetadataBuilder;
 import net.topikachu.rag.service.etl.EtlPipeline;
+import net.topikachu.rag.service.etl.KnowledgeParentBlockService;
 import net.topikachu.rag.service.etl.MilvusChunkRow;
 import net.topikachu.rag.service.etl.MilvusWriteGateway;
 import net.topikachu.rag.service.storage.ObjectStorageService;
@@ -75,6 +76,7 @@ public class DocumentServiceImpl implements DocumentService {
     private final DocumentChunkMetadataBuilder metadataBuilder;
     private final KnowledgeAclRefreshTaskMapper aclRefreshTaskMapper;
     private final EtlJobService etlJobService;
+    private final KnowledgeParentBlockService parentBlockService;
     private final Gson gson = new Gson();
     private final org.springframework.transaction.PlatformTransactionManager transactionManager;
     private final ObjectStorageService objectStorageService;
@@ -179,6 +181,7 @@ public class DocumentServiceImpl implements DocumentService {
                     }
                     return milvusWriteGateway.deleteByDocUuid(doc.getDocUuid())
                             .doOnSuccess(v -> log.info("Deleted from Milvus: docUuid={}", doc.getDocUuid()))
+                            .then(parentBlockService.deleteByDocUuid(doc.getDocUuid()))
                             .then(deleteSourceFile(doc))
                             .then(Mono.fromRunnable(() -> {
                                         aclRefreshTaskMapper.delete(Wrappers.<KnowledgeAclRefreshTask>lambdaQuery()
@@ -885,7 +888,8 @@ public class DocumentServiceImpl implements DocumentService {
                     List<JsonObject> rows = chunks.stream()
                             .map(chunk -> toAclRefreshRow(doc, chunk))
                             .toList();
-                    return milvusWriteGateway.upsert(rows).then();
+                    return milvusWriteGateway.upsert(rows)
+                            .then(parentBlockService.refreshMetadata(doc));
                 });
     }
 

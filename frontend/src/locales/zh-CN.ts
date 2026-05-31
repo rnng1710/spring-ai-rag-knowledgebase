@@ -79,6 +79,7 @@ const zhCN = {
     document: "文档",
     thinking: "思考中...",
     sourceReferenceWithPage: "此回答引用自《{title}》第 {page} 页",
+    sourceReferenceWithSegment: "此回答引用自《{title}》{segment}",
     sourceReferenceWithoutPage: "此回答引用自《{title}》",
     unknownSource: "未知来源",
     errorPrefix: "错误",

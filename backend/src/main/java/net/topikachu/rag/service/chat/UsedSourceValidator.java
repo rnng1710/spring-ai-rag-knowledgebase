@@ -76,7 +76,7 @@ public class UsedSourceValidator {
                 evidenceId(document),
                 stringValue(metadata.get("doc_uuid")),
                 stringValue(metadata.get("file_name")),
-                metadata.getOrDefault("page_number", metadata.get("page")),
+                sourceLocation(metadata),
                 fileType(stringValue(metadata.get("file_name"))));
     }
 
@@ -105,6 +105,21 @@ public class UsedSourceValidator {
 
     private String stringValue(Object value) {
         return value == null ? null : value.toString();
+    }
+
+    private Object sourceLocation(Map<String, Object> metadata) {
+        Object pageStart = metadata.get("page_start");
+        Object pageEnd = metadata.get("page_end");
+        if (pageStart != null && pageEnd != null) {
+            String start = pageStart.toString();
+            String end = pageEnd.toString();
+            return start.equals(end) ? pageStart : start + "-" + end;
+        }
+        Object parentIndex = metadata.get("parent_index");
+        if (parentIndex != null) {
+            return "片段" + parentIndex;
+        }
+        return metadata.getOrDefault("page_number", metadata.get("page"));
     }
 
     private String fileType(String fileName) {
