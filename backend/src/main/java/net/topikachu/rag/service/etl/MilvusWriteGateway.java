@@ -36,6 +36,7 @@ public class MilvusWriteGateway {
     @Value("${spring.ai.vectorstore.milvus.collection-name:vector_store}")
     private String collectionName;
 
+    // ACL 刷新时单次查询上限，防止大数据量下 OOM；超过此限制需分批查询
     @Value("${rag.milvus.acl-refresh-query-limit:10000}")
     private long aclRefreshQueryLimit;
 
@@ -121,6 +122,7 @@ public class MilvusWriteGateway {
         return new HashMap<>();
     }
 
+    // 转义反斜杠和双引号，防止 Milvus 表达式注入（docUuid 来自内部系统，但遵循纵深防御原则）
     private String escapeFilterLiteral(String value) {
         if (value == null) {
             return "";

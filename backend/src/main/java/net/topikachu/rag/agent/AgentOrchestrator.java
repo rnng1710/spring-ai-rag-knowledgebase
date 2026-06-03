@@ -84,8 +84,10 @@ public class AgentOrchestrator {
                 userInput,
                 selectedTags,
                 selectedSpaces);
+        // 必须在工具调用前写入 PLANNING 阶段 note：首次 invoke 会快照 notes 用于 UI 展示，提前写入避免空时间线
         executionContext.addNote(AgentStage.PLANNING, "decision", "正在规划检索与回答步骤。");
 
+        // 集中注入所有依赖到可变状态容器：多个工具回调在一个 agent 循环内共享此对象，封装 step 级状态
         AgentKnowledgeTools toolObject = new AgentKnowledgeTools(
                 knowledgeService,
                 executionContext,
@@ -114,6 +116,7 @@ public class AgentOrchestrator {
                         toolContext(executionContext),
                         AgentResolution.class)
                 .map(resolution -> toExecutionResult(executionContext, resolution))
+                // switchIfEmpty 而非 defaultIfEmpty：仅当模型未输出有效 JSON 时才惰性触发回落
                 .switchIfEmpty(Mono.fromSupplier(() -> noEvidenceFollowup(executionContext)))
                 .doOnError(error -> log.error("Agent tool phase failed. conversationId={}, msgId={}", conversationId, msgId, error))
                 .subscribeOn(agentOrchestratorScheduler);
@@ -173,6 +176,7 @@ public class AgentOrchestrator {
         }
 
         List<EvidenceSnapshot> selectedEvidence = executionContext.selectEvidence(resolution.selectedEvidenceIds());
+        // 模型返回 answer 但未选中任何证据：防止模型在无证据支撑下产生幻觉回答，强制回退为追问
         if (selectedEvidence.isEmpty()) {
             executionContext.addNote(AgentStage.FOLLOWUP, "decision", "模型未选中有效证据，回退为点击式追问。");
             return noEvidenceFollowup(executionContext);
@@ -215,6 +219,7 @@ public class AgentOrchestrator {
         return buildFallbackSuggestion(executionContext.originalUserInput(), executionContext.retrievalGapType(), executionContext.allowedFocusTypes());
     }
 
+    // 要求恰好 2 个选项和 focusType：UI 只渲染两个追问按钮，多于 2 个溢出布局，少于 2 个用户无选择余地
     private boolean isValidFollowupCandidate(FollowupOptionsResult candidate) {
         return candidate.options() != null
                 && candidate.focusTypes() != null
@@ -232,6 +237,7 @@ public class AgentOrchestrator {
         return new FollowupSuggestion(FOLLOWUP_PROMPT, options, "fallback");
     }
 
+    // 每种检索缺口类型映射到特定 focusType 组合：基于知识库覆盖分析和实证调优，非随机配对
     private List<String> pickFallbackFocusTypes(RetrievalGapType gapType, List<String> allowedFocusTypes) {
         Set<String> focusTypes = new LinkedHashSet<>();
         if (allowedFocusTypes != null) {
@@ -306,6 +312,7 @@ public class AgentOrchestrator {
         return String.join(", ", values);
     }
 
+    // 未知类型静默降级为最保守默认值：LLM 输出枚举可能不符合预期，降级而非抛异常保证用户体验不中断
     private String normalizeType(String type) {
         if (type == null) {
             return "followup";
@@ -317,6 +324,7 @@ public class AgentOrchestrator {
         return "followup";
     }
 
+    // 未知 answerMode 静默降级为 normal：LLM 可能输出非预期枚举值，降级保证回答流程不中断
     private String normalizeAnswerMode(String answerMode) {
         if (answerMode == null) {
             return "normal";

@@ -30,7 +30,8 @@ public class DocReader {
 										.filter(Files::isRegularFile)
 										.filter(path -> matcher.matches(path.getFileName()))
 						),
-				Stream::close
+				// 文件 I/O 是阻塞操作，必须 offload 到 boundedElastic 线程池，避免阻塞 Reactor 事件循环
+			Stream::close
 		).subscribeOn(Schedulers.boundedElastic());
 	}
 }

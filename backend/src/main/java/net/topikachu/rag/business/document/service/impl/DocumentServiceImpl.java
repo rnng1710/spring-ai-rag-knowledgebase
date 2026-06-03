@@ -127,7 +127,7 @@ public class DocumentServiceImpl implements DocumentService {
                                     .fileName(file.filename())
                                     .error(error.getMessage())
                                     .build());
-                        }), 3)
+                        }), 3)  // 限制批量上传并发为 3，避免过多文件同时写磁盘耗尽临时空间
                 .collectList()
                 .map(results -> {
                     int success = 0;
@@ -356,6 +356,7 @@ public class DocumentServiceImpl implements DocumentService {
                     if (!DocumentStatus.FAILED.name().equals(doc.getStatus())) {
                         return Mono.error(new IllegalStateException("Only FAILED documents can be retried"));
                     }
+                    // 最多重试 3 次：防止反复重试无效文档浪费资源
                     if (doc.getRetryCount() != null && doc.getRetryCount() >= 3) {
                         return Mono.error(new IllegalStateException("Max retry (3) exceeded, please contact support"));
                     }
@@ -367,6 +368,7 @@ public class DocumentServiceImpl implements DocumentService {
                                 if (!exists) {
                                     return markFileLostAndError(doc);
                                 }
+                                // 重置为 UPLOADED 使 ETL 管道从头运行：管道不支持断点续跑，必须完整重跑
                                 return Mono.fromRunnable(() -> {
                                             doc.setStatus(DocumentStatus.UPLOADED.name());
                                             doc.setErrorMessage(null);
@@ -551,6 +553,7 @@ public class DocumentServiceImpl implements DocumentService {
 
     private Mono<Void> uploadToStorageAndPersist(Path tempFile, String objectKey, String contentType,
                                                   Document doc, String userId) {
+        // 标记 MinIO 上传是否成功，用于异常时回滚清理已上传的孤儿对象
         AtomicBoolean objectUploaded = new AtomicBoolean(false);
         return objectStorageService.putObject(objectKey, tempFile, contentType)
                 .doOnSuccess(v -> objectUploaded.set(true))
@@ -565,6 +568,7 @@ public class DocumentServiceImpl implements DocumentService {
                 });
     }
 
+    // 手动创建 TransactionTemplate：在 boundedElastic 线程上 @Transactional 不生效，需直接使用事务管理器
     private Mono<Void> persistDocumentAndQueueEtl(Document doc, String objectKey, String userId) {
         return Mono.fromCallable(() -> {
             org.springframework.transaction.support.TransactionTemplate tx =
@@ -864,6 +868,7 @@ public class DocumentServiceImpl implements DocumentService {
         markTaskRunning(task);
         markDocumentAclRefreshStatus(doc, AclRefreshStatus.RUNNING, null, null);
         try {
+            // .block() 将异步写入转同步：本方法由定时器线程调用，不在 Reactor 上下文中，阻塞安全
             refreshVectorMetadata(doc).block();
             markTaskSuccess(task);
             markDocumentAclRefreshStatus(doc, AclRefreshStatus.SUCCESS, null, LocalDateTime.now());

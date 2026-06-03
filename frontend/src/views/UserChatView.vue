@@ -351,6 +351,7 @@ const scrollBottom = () => {
     });
 };
 
+// 格式化溯源引用标签：PDF 显示"文件名 · 第N页"，DOCX/MD 显示"文件名 · 面包屑路径"
 const formatSourceReference = (source: any) => {
   const docUuid = source.doc_uuid || source.docUuid;
   const title = docUuid ? (source.file_name || source.fileName || source.source || t("chat.document")) : t("chat.unknownSource");
@@ -364,11 +365,13 @@ const formatSourceReference = (source: any) => {
   return t("chat.sourceReferenceWithoutPage", { title });
 };
 
+// 点击溯源标签时打开原文预览：PDF 定位到对应页面，非 PDF 直接打开文件
 const openSource = async (source: SourceMeta) => {
   const docUuid = source.doc_uuid || source.docUuid;
   if (!docUuid) return;
   try {
     const page = source.page_number ?? source.pageNumber;
+    // 片段标签无法定位到具体页面，不带 page hash
     await openDocPreview(String(docUuid), isSegmentLocation(page) ? undefined : page);
   } catch (e) {
     console.error(e);
@@ -400,6 +403,7 @@ const formatPageValue = (page: unknown) => {
   return String(page);
 };
 
+// 判断溯源位置是否为"片段N"格式（非 PDF 文档的通用兜底标签）
 const isSegmentLocation = (page: unknown) => {
   return typeof page === "string" && page.startsWith("片段");
 };
@@ -454,6 +458,7 @@ const updateMessageById = (msgId: string, updater: (msg: ChatMessage) => void) =
   }
 };
 
+// 集中式状态 reducer：所有聊天状态变更通过 dispatch(action) 统一管理，避免散落的响应式修改
 const dispatch = (action: ChatAction) => {
   switch (action.type) {
     case "START_REQUEST":
@@ -557,6 +562,7 @@ const submitChat = async (userInput: string, options?: { clearInput?: boolean; f
     setFollowupPending(options.followupMsgId, true);
   }
 
+  // 后端 ollama 默认部署 Qwen 2.5 模型，后续换模型时需同步更新此映射
   const modelNameMap: Record<string, string> = {
     ollama: 'Qwen 2.5',
     deepseek: 'DeepSeek',

@@ -59,6 +59,7 @@ export const getRoleFromAccessToken = (token: string | null): AppRole | null => 
     return null;
   }
 
+  // 角色名统一转大写：JWT 中 roles 数组可能混合大小写，标准化后做包含判断
   const normalized = payload.roles
     .filter((role): role is string => typeof role === "string")
     .map((role) => role.toUpperCase());
@@ -92,6 +93,7 @@ export const isTokenExpired = (token: string | null): boolean => {
     return true;
   }
   const nowInSeconds = Math.floor(Date.now() / 1000);
+  // 无 30s 缓冲：此函数用于路由守卫判断是否需要刷新，精确判断避免不必要的 refresh 调用
   return payload.exp <= nowInSeconds;
 };
 

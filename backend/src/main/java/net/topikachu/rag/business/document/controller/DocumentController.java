@@ -109,13 +109,14 @@ public class DocumentController {
                 .map(this::toDownloadResponse);
     }
 
+    // 原文预览：通过 docUuid 从 MinIO 拉取文件，返回二进制流供浏览器直接打开
     @GetMapping("/docs/by-uuid/{docUuid}/preview")
     @PreAuthorize("hasAnyRole('USER', 'ADMIN')")
     public Mono<ResponseEntity<Resource>> preview(@PathVariable String docUuid, Mono<Principal> principalMono) {
         return principalMono.map(Principal::getName)
                 .flatMap(username -> documentService.previewDocumentByDocUuid(
                         docUuid,
-                        currentUserContextService.resolveByUsername(username)))
+                        currentUserContextService.resolveByUsername(username)))  // 校验用户是否有权访问该文档
                 .map(this::toPreviewResponse);
     }
 

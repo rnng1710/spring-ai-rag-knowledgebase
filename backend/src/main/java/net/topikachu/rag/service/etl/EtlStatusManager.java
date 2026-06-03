@@ -61,6 +61,7 @@ public class EtlStatusManager {
                             .set(net.topikachu.rag.business.document.entity.Document::getAclRefreshTime, LocalDateTime.now())
                             .set(net.topikachu.rag.business.document.entity.Document::getUpdateDate, LocalDateTime.now())
                             .eq(net.topikachu.rag.business.document.entity.Document::getDocUuid, docUuid)
+                            // CAS：ne(FAILED) 防止将已被 Watchdog 标记为 FAILED 的文档错误地设为 COMPLETED
                             .ne(net.topikachu.rag.business.document.entity.Document::getStatus, DocumentStatus.FAILED.name()));
             if (rows == 0) {
                 String msg = "CAS conflict: document " + docUuid + " is already FAILED.";
@@ -88,6 +89,7 @@ public class EtlStatusManager {
                             .setSql("retry_count = IFNULL(retry_count, 0) + 1")
                             .set(net.topikachu.rag.business.document.entity.Document::getUpdateDate, LocalDateTime.now())
                             .eq(net.topikachu.rag.business.document.entity.Document::getDocUuid, docUuid)
+                            // 只有非终态才能转为 FAILED：UPLOADED/READING/SPLITTING/VECTORIZING
                             .in(net.topikachu.rag.business.document.entity.Document::getStatus,
                                     DocumentStatus.UPLOADED.name(),
                                     DocumentStatus.READING.name(),
@@ -97,6 +99,7 @@ public class EtlStatusManager {
         }).subscribeOn(Schedulers.boundedElastic())
                 .flatMap(rows -> {
                     if (rows > 0) {
+                        // 补偿清理顺序：先删 Milvus 向量，再删 MySQL 父块；任一失败不影响状态更新
                         return hybridVectorWriter.deleteByDocUuid(docUuid)
                                 .onErrorResume(ex -> {
                                     log.warn("Vector cleanup failed for {}: {}", docUuid, ex.getMessage());
@@ -115,6 +118,7 @@ public class EtlStatusManager {
                 });
     }
 
+    // 同步版本供 Watchdog 等非 reactive 调用方使用，.block() 在 boundedElastic 线程上安全
     public boolean transitionToFailedSync(String docUuid, String userId, Throwable error) {
         return Boolean.TRUE.equals(transitionToFailed(docUuid, userId, error).block());
     }
@@ -141,6 +145,7 @@ public class EtlStatusManager {
         if (msg == null || msg.isBlank()) {
             msg = cause.getClass().getSimpleName();
         }
+        // 截断到 500 字符：数据库 error_message 列长度有限
         return msg.length() > 500 ? msg.substring(0, 500) : msg;
     }
 
@@ -148,6 +153,7 @@ public class EtlStatusManager {
         if (e == null) return null;
         StringWriter sw = new StringWriter();
         e.printStackTrace(new PrintWriter(sw));
+        // 截断到 2000 字符：数据库 error_stack 列长度有限
         String full = sw.toString();
         return full.length() > 2000 ? full.substring(0, 2000) : full;
     }

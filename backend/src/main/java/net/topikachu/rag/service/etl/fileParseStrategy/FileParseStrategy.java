@@ -1,14 +1,16 @@
 package net.topikachu.rag.service.etl.fileParseStrategy;
 
+import net.topikachu.rag.service.etl.ChunkUtils;
 import net.topikachu.rag.service.etl.EtlPipeline;
-import org.springframework.ai.document.Document;
 
-import java.util.List;
-
+/**
+ * 文件解析策略：每种文件类型独立实现，负责读取、切分并构建父块-子块结构。
+ * supports() 基于文件扩展名匹配，不检查文件内容/魔数。
+ */
 //pdf,doc,docx,txt,md
 public interface FileParseStrategy {
 
-    List<Document> readFile(String fileType, EtlPipeline.EtlContext ctx);
+    ChunkUtils.ParentChildDocuments readAndSplit(String fileType, EtlPipeline.EtlContext ctx);
 
-    String getFileType();
+    boolean supports(String fileType);
 }

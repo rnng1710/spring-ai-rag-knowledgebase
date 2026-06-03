@@ -113,6 +113,21 @@ class UsedSourceValidatorTest {
     }
 
     @Test
+    void prefersExplicitSourceLocation() {
+        Document candidate = new Document("content", Map.of(
+                "evidence_id", "ev-1",
+                "doc_uuid", "doc-1",
+                "file_name", "policy.docx",
+                "parent_index", 4,
+                "source_location", "学生纪律 > 开除程序"));
+        SourcedAnswerResult result = new SourcedAnswerResult("answer", "factual", List.of("ev-1"));
+
+        List<UsedSource> usedSources = validator.validate(result, List.of(candidate));
+
+        assertEquals("学生纪律 > 开除程序", usedSources.get(0).pageNumber());
+    }
+
+    @Test
     void rejectsMissingAnswerWithReason() {
         SourcedAnswerResult result = new SourcedAnswerResult("", "factual", List.of("ev-1"));
 

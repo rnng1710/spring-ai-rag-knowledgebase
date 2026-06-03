@@ -1,37 +1,31 @@
 package net.topikachu.rag.service.etl.fileParseStrategy;
 
-import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 @Component
 public class FileParseStrategyFactory {
 
-    private Map<String, FileParseStrategy> fileParseStrategyMap = new HashMap<>();
-
+    // Spring 自动收集所有 FileParseStrategy 实现类注入此列表，按文件扩展名遍历匹配
     @Autowired
-    private List<FileParseStrategy> fileParseStrategyList;
+    private List<FileParseStrategy> strategies;
 
-    @PostConstruct
-    public void init() {
-        for(FileParseStrategy fileParseStrategy : fileParseStrategyList){
-            fileParseStrategyMap.put(fileParseStrategy.getFileType(), fileParseStrategy);
-        }
-    }
-
-    public FileParseStrategy getFileParseStrategy(String fileType){
-        FileParseStrategy fileParseStrategy = fileParseStrategyMap.get(fileType);
-        if(fileParseStrategy == null){
+    public FileParseStrategy getFileParseStrategy(String fileType) {
+        FileParseStrategy result = getFileParseStrategyOrNull(fileType);
+        if (result == null) {
             throw new IllegalStateException("Unsupported file type: " + fileType);
         }
-        return fileParseStrategy;
+        return result;
     }
 
     public FileParseStrategy getFileParseStrategyOrNull(String fileType) {
-        return fileParseStrategyMap.get(fileType);
+        for (FileParseStrategy strategy : strategies) {
+            if (strategy.supports(fileType)) {
+                return strategy;
+            }
+        }
+        return null;
     }
 }

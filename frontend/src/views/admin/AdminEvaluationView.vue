@@ -499,6 +499,7 @@ const formatModeLabel = (mode: string) => FAILURE_MODE_LABELS.value[mode] || mod
 
 const formatDate = (d: Date | undefined): string | undefined => {
   if (!d) return undefined;
+  // 仅截取日期部分（YYYY-MM-DD）：后端 API 接受日期字符串，去掉时间部分避免时区偏差
   return d.toISOString().slice(0, 10);
 };
 
@@ -644,6 +645,7 @@ const toggleRowExpand = (row: EvalConversation) => {
 };
 
 const handleExpand = (row: EvalConversation, expandedRows: EvalConversation[]) => {
+  // 行展开时懒加载 RAGAS 评分：避免列表初始加载时批量请求所有行的评分数据
   if (expandedRows.some((item) => item.id === row.id) && !autoScoresById.value[row.id]) {
     loadAutoScores(row.id);
   }
@@ -684,6 +686,7 @@ const loadAutoScores = async (evaluationId: string) => {
   autoScoreLoading.value = { ...autoScoreLoading.value, [evaluationId]: true };
   try {
     const scores = await fetchAutoScores(evaluationId);
+    // 展开运算符创建新对象：Vue 3 的 ref 需要整体替换才能触发响应式更新，直接修改属性不会触发
     autoScoresById.value = { ...autoScoresById.value, [evaluationId]: scores };
   } catch {
     autoScoresById.value = { ...autoScoresById.value, [evaluationId]: [] };

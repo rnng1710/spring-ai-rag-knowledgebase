@@ -34,6 +34,11 @@ import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
+/**
+ * WebFlux 安全配置：基于 JWT Bearer Token 认证 + RBAC 角色授权。
+ * JWT 中 "roles" claim 映射为 Spring Security 的 ROLE_ 前缀权限，
+ * 配合 @PreAuthorize("hasRole('ADMIN')") 实现方法级访问控制。
+ */
 @Configuration(proxyBeanMethods = false)
 @EnableWebFluxSecurity
 @EnableReactiveMethodSecurity
@@ -67,6 +72,7 @@ public class SecurityConfiguration {
 
     @Bean
     public Converter<Jwt, ? extends Mono<? extends AbstractAuthenticationToken>> jwtAuthenticationConverter() {
+        // 从 JWT "roles" claim 提取角色，添加 ROLE_ 前缀以匹配 hasRole() 语义
         JwtGrantedAuthoritiesConverter authoritiesConverter = new JwtGrantedAuthoritiesConverter();
         authoritiesConverter.setAuthoritiesClaimName("roles");
         authoritiesConverter.setAuthorityPrefix("ROLE_");
@@ -96,7 +102,8 @@ public class SecurityConfiguration {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration cfg = new CorsConfiguration();
-        cfg.setAllowedOrigins(List.of("http://localhost:5173"));
+        // 5174 为前端备用开发端口（如文档预览独立页面），生产环境需外部化此配置
+        cfg.setAllowedOrigins(List.of("http://localhost:5173", "http://localhost:5174"));
         cfg.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         cfg.setAllowCredentials(true);
         cfg.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Requested-With"));

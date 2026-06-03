@@ -10,8 +10,8 @@ public class OllamaChatModelStrategy implements ChatModelStrategy {
 
     private final ChatClient chatClient;
 
+    // @Qualifier("openAiChatModel") 实际连接 Ollama：Ollama 暴露 OpenAI 兼容 API，Spring Boot 自动配置的 bean 指向本地 Ollama
     public OllamaChatModelStrategy(@Qualifier("openAiChatModel") ChatModel chatModel) {
-        // Use the default auto-configured ChatModel (which connects to Ollama)
         this.chatClient = ChatClient.builder(chatModel).build();
     }
 

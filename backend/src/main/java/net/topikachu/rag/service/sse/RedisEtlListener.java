@@ -24,6 +24,7 @@ public class RedisEtlListener implements MessageListener {
         try {
             EtlStatusMessage msg = objectMapper.readValue(message.getBody(), EtlStatusMessage.class);
             log.debug("Received Redis ETL message for user={}, doc={}", msg.getUserId(), msg.getDocUuid());
+            // broadcastLocal：多实例部署下每实例都收到 Redis 消息，但只推送给本地持有该用户 SSE 连接的实例
             sseService.broadcastLocal(msg);
         } catch (IOException e) {
             log.error("Failed to parse Redis ETL message", e);

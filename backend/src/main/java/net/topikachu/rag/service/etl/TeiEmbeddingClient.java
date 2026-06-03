@@ -100,7 +100,7 @@ public class TeiEmbeddingClient {
                     Long key = Long.parseLong(entry.getKey());
                     sparseVector.put(key, entry.getValue());
                 } catch (NumberFormatException e) {
-                    // Fallback: hash non-numeric keys
+                    // 部分 BGE-M3 变体返回非数字 token key（如词条字符串），MurmurHash3 做一致性哈希兜底
                     Long key = hashToken(entry.getKey());
                     sparseVector.put(key, entry.getValue());
                 }

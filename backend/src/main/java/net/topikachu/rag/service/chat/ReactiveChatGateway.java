@@ -55,6 +55,7 @@ public class ReactiveChatGateway {
                         "llm.conversation_id", conversationId == null ? "" : conversationId,
                         "llm.prompt_chars", systemText == null ? 0 : systemText.length(),
                         "llm.user_chars", userText == null ? 0 : userText.length()),
+                // .call() 是阻塞调用，必须 subscribeOn(boundedElastic) 卸载到弹性线程池，避免卡死 Netty 事件循环
                 Mono.fromCallable(() -> buildPrompt(chatClient, systemText, systemParams, userText, conversationId, chatMemoryAdvisor)
                         .call()
                         .content())

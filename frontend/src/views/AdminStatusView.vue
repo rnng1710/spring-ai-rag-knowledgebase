@@ -93,6 +93,7 @@ const upload = async () => {
       method: "POST",
       body: form
     });
+    // clone() 后双路径解析：Response body 只能消费一次，clone 副本分别尝试 JSON 和 text 解析
     let payload: any = null;
     let fallbackMsg = "";
     try {

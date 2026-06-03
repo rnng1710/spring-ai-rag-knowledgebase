@@ -12,6 +12,7 @@ interface TokenResponse {
   refresh_token: string;
 }
 
+// 模块级单例：并发调用 refreshTokens 时共享同一个 Promise，避免重复刷新
 let refreshPromise: Promise<TokenResponse> | null = null;
 
 const getStoredAccessToken = () => localStorage.getItem(KEY_ACCESS_TOKEN);
@@ -56,6 +57,7 @@ const isTokenExpired = (token: string | null): boolean => {
   }
 
   const nowInSeconds = Math.floor(Date.now() / 1000);
+  // 提前 30 秒判定过期：防止 token 在请求传输中途失效，留出时钟偏差和网络延迟余量
   return payload.exp <= nowInSeconds + 30;
 };
 
@@ -151,6 +153,7 @@ export const authFetch = async (input: string, init: RequestInit = {}, allowRetr
     headers,
   });
 
+  // 401 时刷新 token 后重放请求（仅一次）：避免并发请求同时刷新导致竞态
   if (response.status !== 401 || !allowRetry) {
     return response;
   }

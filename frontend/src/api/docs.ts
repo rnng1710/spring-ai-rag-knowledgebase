@@ -147,6 +147,7 @@ export const listAccessibleSpaces = async () => {
     return [];
 };
 
+// 构造预览 URL：不带页码则直接返回文件地址，带页码则追加 #page=N hash（浏览器 PDF 查看器自动跳转）
 export const previewDocUrl = (docUuid: string, pageNumber?: unknown) => {
     const url = apiUrl(`/api/v1/docs/by-uuid/${encodeURIComponent(docUuid)}/preview`);
     if (pageNumber === undefined || pageNumber === null || pageNumber === "") {
@@ -155,23 +156,29 @@ export const previewDocUrl = (docUuid: string, pageNumber?: unknown) => {
     return `${url}#page=${encodeURIComponent(String(pageNumber))}`;
 };
 
+// 打开原文预览：先发请求获取文件 blob，再通过 blob URL + #page=N 在新标签页打开
+// PDF 文件浏览器会自动跳转到 #page 指定的页码
 export const openDocPreview = async (docUuid: string, pageNumber?: unknown) => {
     const previewWindow = window.open("about:blank", "_blank");
+    // 从后端获取文件二进制流
     const res = await authFetch(apiUrl(`/api/v1/docs/by-uuid/${encodeURIComponent(docUuid)}/preview`));
     if (!res.ok) {
         previewWindow?.close();
         throw new Error(`Preview failed: ${res.status}`);
     }
     const blob = await res.blob();
+    // 将 blob 转为临时 URL，新窗口打开（浏览器内嵌 PDF 查看器或下载）
     const blobUrl = window.URL.createObjectURL(blob);
     const targetUrl = pageNumber === undefined || pageNumber === null || pageNumber === ""
         ? blobUrl
-        : `${blobUrl}#page=${encodeURIComponent(String(pageNumber))}`;
+        : `${blobUrl}#page=${encodeURIComponent(String(pageNumber))}`;  // PDF 页码 hash 定位
     if (previewWindow) {
         previewWindow.location.href = targetUrl;
     } else {
         window.open(targetUrl, "_blank");
     }
+    // 60 秒后释放 blob URL，避免内存泄漏
+    // 60 秒足够大 PDF 在新标签页完成加载，且不会因长期持有 blob URL 造成显著内存占用
     setTimeout(() => window.URL.revokeObjectURL(blobUrl), 60_000);
 };
 

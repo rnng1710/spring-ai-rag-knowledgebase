@@ -4,6 +4,7 @@ import java.util.Locale;
 
 public final class TextSanitizer {
 
+    // 移除字符 ≥8 个且占比 ≥2% 时判定为低质量提取，触发上游警告但不阻塞处理
     private static final int LOW_QUALITY_REMOVED_THRESHOLD = 8;
     private static final double LOW_QUALITY_REMOVED_RATIO = 0.02d;
     private static final int MIN_MEANINGFUL_CODEPOINTS = 1;
@@ -49,6 +50,7 @@ public final class TextSanitizer {
                 continue;
             }
 
+            // Unicode 行分隔符(0x2028)和段分隔符(0x2029)统一规范化为 \n，防止下游解析异常
             if (codePoint == '\r' || codePoint == '\n' || codePoint == '\f' || codePoint == 0x2028 || codePoint == 0x2029) {
                 normalizedWhitespace += appendNewline(sanitized);
                 continue;
@@ -59,6 +61,7 @@ public final class TextSanitizer {
                 continue;
             }
 
+            // NBSP(0xA0) 和全角空格(0x3000) 在 CJK 文本中常见，统一按空格处理
             if (Character.isWhitespace(codePoint) || codePoint == 0x00A0 || codePoint == 0x3000) {
                 normalizedWhitespace += appendSpace(sanitized);
                 continue;
@@ -130,6 +133,7 @@ public final class TextSanitizer {
         return normalized.substring(0, 117) + "...";
     }
 
+    // 过滤 Unicode 非字符(U+FDD0~U+FDEF)和 BOM(U+FFFE/U+FFFF)，嵌入模型无法正确处理这些码点
     private static boolean isDisallowedCodePoint(int codePoint) {
         if (Character.isISOControl(codePoint) && codePoint != '\n' && codePoint != '\r' && codePoint != '\t') {
             return true;
@@ -140,6 +144,7 @@ public final class TextSanitizer {
         return (codePoint & 0xFFFF) == 0xFFFE || (codePoint & 0xFFFF) == 0xFFFF;
     }
 
+    // 将中文字符(Han)视为有意义码点：英文环境只需 letter/digit，但 CJK 文档判断质量必须计入汉字
     private static boolean isMeaningfulCodePoint(int codePoint) {
         return Character.isLetterOrDigit(codePoint)
                 || Character.UnicodeScript.of(codePoint) == Character.UnicodeScript.HAN;

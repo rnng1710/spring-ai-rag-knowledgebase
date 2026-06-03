@@ -47,6 +47,7 @@ public class EtlJobWorker {
     private final EtlJobService etlJobService;
     private final EtlJobMapper etlJobMapper;
     private final ObjectStorageService objectStorageService;
+    // UUID 去掉连字符：日志和数据库中更简洁，且不影响唯一性
     private final String workerId = UUID.randomUUID().toString().replace("-","");
 
     @Scheduled(fixedDelayString = "${rag.etl.worker.fixed-delay-ms:5000}")
@@ -182,6 +183,7 @@ public class EtlJobWorker {
     }
 
     private Disposable startHeartbeat(String jobId) {
+        // 心跳间隔取 lockMinutes/3，确保租约到期前至少续约 3 次，最低 30 秒防止过于频繁
         long intervalSeconds = Math.max(30, lockMinutes * 60L / 3);
 
         return Flux.interval(Duration.ofSeconds(intervalSeconds))
@@ -218,6 +220,7 @@ public class EtlJobWorker {
                                     .eq(EtlJob::getStatus, EtlJobStatus.RUNNING.name())
                                     .eq(EtlJob::getLockedBy, workerId)
                     );
+                    // CAS：同时校验 status=RUNNING 和 lockedBy=workerId，防止租约丢失后被其他 worker 覆盖
                     if (updated != 1) {
                         log.warn("Skip marking ETL job success because lease was lost: jobId={}, workerId={}",
                                 job.getId(), workerId);
@@ -234,6 +237,7 @@ public class EtlJobWorker {
                     int retryCount = job.getRetryCount() == null ? 0 : job.getRetryCount();
                     int nextRetryCount = retryCount + 1;
 
+                    // CAS：同 markSuccess，防止租约丢失后被覆盖
                     int updated = etlJobMapper.update(null,
                             Wrappers.<EtlJob>lambdaUpdate()
                                     .set(EtlJob::getFinishedAt, now)
@@ -259,6 +263,7 @@ public class EtlJobWorker {
                 .then();
     }
 
+    // 指数退避：第 1 次 5 分钟 → 第 2 次 15 分钟 → 第 3 次 1 小时 → 之后每 6 小时
     private LocalDateTime calculateNextRetryTime(int retryCount) {
         int minutes = switch (retryCount) {
             case 1 -> 5;
@@ -285,6 +290,7 @@ public class EtlJobWorker {
             message = root.getClass().getSimpleName();
         }
 
+        // 截断到 1000 字符：数据库 error_message 列长度有限
         return message.length() > 1000 ? message.substring(0, 1000) : message;
     }
 
@@ -296,6 +302,7 @@ public class EtlJobWorker {
         StringWriter sw = new StringWriter();
         error.printStackTrace(new PrintWriter(sw));
 
+        // 截断到 2000 字符：数据库 error_stack 列长度有限
         String stack = sw.toString();
         return stack.length() > 2000 ? stack.substring(0, 2000) : stack;
     }

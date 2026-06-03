@@ -18,6 +18,7 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class KnowledgeParentBlockService {
 
+    // 每次父块-子块 schema 变更时递增此版本号，Milvus 检索时按此过滤，隔离不同格式的历史数据
     public static final int CHUNK_SCHEMA_VERSION = 2;
 
     private final KnowledgeParentBlockMapper parentBlockMapper;
@@ -28,6 +29,7 @@ public class KnowledgeParentBlockService {
                 .then();
     }
 
+    // 先删后插实现原子替换：当前 mapper 不支持 upsert，且 ETL 重跑时需清理旧父块
     public void replaceForDocumentSync(String docUuid, List<KnowledgeParentBlock> parentBlocks) {
         deleteByDocUuidSync(docUuid);
         if (parentBlocks == null || parentBlocks.isEmpty()) {

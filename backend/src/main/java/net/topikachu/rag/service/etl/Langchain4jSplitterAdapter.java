@@ -17,20 +17,22 @@ public class Langchain4jSplitterAdapter extends TextSplitter {
     private final dev.langchain4j.data.document.DocumentSplitter internalSplitter;
 
     public Langchain4jSplitterAdapter(int chunkSize, int chunkOverlap) {
-        // 使用 LangChain4j 的递归切分器
+        // 使用 LangChain4j 的递归切分器：优先按段落/句子边界切分，超长时才在字符中间切断
         this.internalSplitter = DocumentSplitters.recursive(chunkSize, chunkOverlap);
     }
 
     @Override
     protected List<String> splitText(String text) {
+        // 切分前先清洗：去除控制字符、规范化空白
         TextSanitizer.SanitizationResult result = TextSanitizer.sanitize(text);
         if (result.isEffectivelyEmpty()) {
             return List.of();
         }
         dev.langchain4j.data.document.Document lcDoc = dev.langchain4j.data.document.Document.from(result.text());
+        // 递归切分：优先按段落(\n\n) → 句子(。！？) → 空格 → 字符边界逐级尝试
         return internalSplitter.split(lcDoc).stream()
                 .map(TextSegment::text)
-                .map(TextSanitizer::sanitize)
+                .map(TextSanitizer::sanitize)       // 切分后再次清洗，去除边界产生的空片段
                 .filter(resultItem -> !resultItem.isEffectivelyEmpty())
                 .map(TextSanitizer.SanitizationResult::text)
                 .collect(Collectors.toList());
@@ -40,8 +42,7 @@ public class Langchain4jSplitterAdapter extends TextSplitter {
     public List<Document> apply(List<Document> documents) {
         return documents.stream()
                 .flatMap(springDoc -> {
-                    // 1. 转换 Metadata: Spring AI (Map<String, Object>) -> LangChain4j (Map<String,
-                    // String>)
+                    // 1. 元数据转换：Spring AI (Map<String, Object>) → LangChain4j (Map<String, String>)
                     Map<String, String> lcMetadata = new HashMap<>();
                     if (springDoc.getMetadata() != null) {
                         springDoc.getMetadata().forEach((k, v) -> lcMetadata.put(k, v != null ? v.toString() : ""));
@@ -50,10 +51,10 @@ public class Langchain4jSplitterAdapter extends TextSplitter {
                     dev.langchain4j.data.document.Document lcDoc = dev.langchain4j.data.document.Document
                             .from(springDoc.getText(), dev.langchain4j.data.document.Metadata.from(lcMetadata));
 
-                    // 2. 核心切分
+                    // 2. 核心切分：一个 Parent Document → 多个 TextSegment
                     List<TextSegment> segments = internalSplitter.split(lcDoc);
 
-                    // 3. 结果转换与扁平化 (修复 Java 编译流类型报错)
+                    // 3. 每个 TextSegment 清洗后转为 Spring AI Document，子块继承父块的全部 metadata
                     return segments.stream()
                             .map(segment -> TextSanitizer.sanitize(segment.text()))
                             .filter(result -> !result.isEffectivelyEmpty())
@@ -72,10 +73,11 @@ public class Langchain4jSplitterAdapter extends TextSplitter {
                             })
                             .map(result -> {
                                 Map<String, Object> springMetadata = sanitizeMetadata(springDoc.getMetadata());
+                                // 子块继承父块的全部 metadata（parent_block_id、page_start 等）
                                 return new Document(result.text(), springMetadata);
                             });
                 })
-                .collect(Collectors.toList()); // 最终聚合成一维 List<Document>要求的签名
+                .collect(Collectors.toList());
     }
 
     private Map<String, Object> sanitizeMetadata(Map<String, Object> metadata) {

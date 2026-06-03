@@ -100,6 +100,7 @@ public class RetrievalPipeline {
                         return Mono.just(Collections.emptyList());
                     }
                     if (!useRerank) {
+                        // rerankTopK 在此兼任截断上限：跳过重排序时直接按此数量截断候选集
                         return Mono.just(candidates.subList(0, Math.min(candidates.size(), rerankTopK)));
                     }
                     long rerankStart = System.currentTimeMillis();
@@ -117,11 +118,13 @@ public class RetrievalPipeline {
                 });
     }
 
+    // 子块回查父块：将检索命中的子块按 parent_block_id 去重聚合，批量查询 MySQL 获取完整父块上下文
     private Mono<List<ParentContextBlock>> expandParentContexts(List<Document> childCandidates) {
         if (childCandidates == null || childCandidates.isEmpty()) {
             return Mono.just(List.of());
         }
 
+        // 按 parent_block_id 去重聚合，同时收集每个父块下所有命中子块的 evidence_id
         Map<String, ParentAccumulator> byParentId = new LinkedHashMap<>();
         int rank = 0;
         for (Document child : childCandidates) {
@@ -133,21 +136,26 @@ public class RetrievalPipeline {
                 return Mono.error(new ParentContextMissingException("知识库索引数据不一致，请重建该文档索引后重试。"));
             }
             int currentRank = rank;
+            // 首次遇到该 parent_block_id → 创建累加器，记录最佳排名
+            // 重复遇到 → 仅追加 evidence_id（同一父块下的不同子块均被命中）
             ParentAccumulator accumulator = byParentId.computeIfAbsent(parentBlockId,
                     ignored -> new ParentAccumulator(parentBlockId, stringValue(metadata.get("doc_uuid")), currentRank));
             accumulator.evidenceIds().add(evidenceId);
         }
 
+        // 批量查询 MySQL，一次取出所有去重后的父块
         List<String> parentBlockIds = new ArrayList<>(byParentId.keySet());
         return parentBlockService.findByParentBlockIds(parentBlockIds)
                 .map(parentBlocks -> toParentContextBlocks(byParentId, parentBlocks));
     }
 
+    // 将 MySQL 查询结果与累加器合并，校验 schema 版本和 docUuid 一致性
     private List<ParentContextBlock> toParentContextBlocks(Map<String, ParentAccumulator> accumulators,
                                                            Map<String, KnowledgeParentBlock> parentBlocks) {
         List<ParentContextBlock> contexts = new ArrayList<>();
         for (ParentAccumulator accumulator : accumulators.values()) {
             KnowledgeParentBlock parentBlock = parentBlocks.get(accumulator.parentBlockId());
+            // 校验：父块必须存在、schema 版本匹配、docUuid 一致（防止跨文档误关联）
             if (parentBlock == null
                     || parentBlock.getChunkSchemaVersion() == null
                     || parentBlock.getChunkSchemaVersion() != KnowledgeParentBlockService.CHUNK_SCHEMA_VERSION
@@ -158,17 +166,20 @@ public class RetrievalPipeline {
                     parentBlock.getParentBlockId(),
                     parentBlock.getDocUuid(),
                     parentBlock.getFileName(),
-                    parentBlock.getContent(),
+                    parentBlock.getContent(),          // 1200 字完整段落，发给 LLM 推理
                     parentBlock.getParentIndex(),
                     parentBlock.getPageStart(),
                     parentBlock.getPageEnd(),
-                    List.copyOf(accumulator.evidenceIds()),
-                    accumulator.bestRank()));
+                    List.copyOf(accumulator.evidenceIds()),  // 该父块下所有被命中的子块 evidence_id，供 LLM 引用
+                    accumulator.bestRank()));                  // 该父块下最佳排名的子块排名，用于最终排序
         }
         return contexts;
     }
 
     private String evidenceId(Document document) {
+        if (document == null) {
+            return null;
+        }
         Object metadataEvidenceId = document.getMetadata().get("evidence_id");
         if (metadataEvidenceId != null && StringUtils.hasText(metadataEvidenceId.toString())) {
             return metadataEvidenceId.toString().trim();
@@ -183,8 +194,8 @@ public class RetrievalPipeline {
     private record ParentAccumulator(
             String parentBlockId,
             String docUuid,
-            int bestRank,
-            List<String> evidenceIds
+            int bestRank,              // 该父块下最早被命中的子块排名（数字越小越靠前）
+            List<String> evidenceIds   // 该父块下所有被命中子块的 evidence_id 集合
     ) {
         private ParentAccumulator(String parentBlockId, String docUuid, int bestRank) {
             this(parentBlockId, docUuid, bestRank, new ArrayList<>());

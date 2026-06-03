@@ -41,6 +41,7 @@ public class MilvusSchemaInitializer implements CommandLineRunner {
         @Value("${spring.ai.vectorstore.milvus.embedding-dimension:768}")
         private int embeddingDimension;
 
+        // 强制重建开关：Milvus collection schema 变更（如新增稀疏向量字段）后需重建，默认 false 避免误删
         @Value("${rag.milvus.force-rebuild:false}")
         private boolean forceRebuild;
 

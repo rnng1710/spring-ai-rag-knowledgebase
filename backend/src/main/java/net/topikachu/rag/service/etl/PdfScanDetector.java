@@ -20,11 +20,14 @@ public class PdfScanDetector {
 
 	public ScanAnalysis analyze(Path path) throws IOException {
 		try (PDDocument document = Loader.loadPDF(path.toFile())) {
+			// 使用 PDFBox 尝试提取内嵌文本层
 			PDFTextStripper stripper = new PDFTextStripper();
 			String extractedText = stripper.getText(document);
+			// 统计有意义的字符数（排除空白和控制字符）
 			int meaningfulChars = countMeaningfulChars(extractedText);
 			int pageCount = Math.max(document.getNumberOfPages(), 1);
 			double averageMeaningfulCharsPerPage = meaningfulChars / (double) pageCount;
+			// 核心判定：每页平均有意义字符数低于阈值 → 判定为扫描件（图片PDF，无文本层）
 			boolean scanDetected = averageMeaningfulCharsPerPage < ocrProperties.getPdf().getNativeTextThreshold();
 			return new ScanAnalysis(scanDetected, meaningfulChars, pageCount, averageMeaningfulCharsPerPage);
 		}

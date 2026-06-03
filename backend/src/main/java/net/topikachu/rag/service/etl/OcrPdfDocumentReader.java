@@ -18,6 +18,7 @@ public class OcrPdfDocumentReader {
 		this.ocrClient = ocrClient;
 	}
 
+	// .block() 调用远程 OCR 服务：ETL 管线已在 boundedElastic 线程上运行，阻塞不会影响事件循环
 	public List<Document> read(Path path) {
 		OcrClient.OcrPdfResponse response = ocrClient.ocrPdf(path).block();
 		if (response == null || response.pages() == null || response.pages().isEmpty()) {

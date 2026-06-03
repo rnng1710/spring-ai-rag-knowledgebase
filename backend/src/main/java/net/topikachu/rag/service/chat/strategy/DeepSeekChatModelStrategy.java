@@ -23,6 +23,7 @@ public class DeepSeekChatModelStrategy implements ChatModelStrategy {
     private final ChatClient chatClient;
 
     public DeepSeekChatModelStrategy(LlmProperties properties) {
+        // 同时配置 WebClient 和 RestClient 超时：Spring AI 的 OpenAiApi 内部同时使用反应式和阻塞 HTTP 客户端，两者需一致
         int readTimeoutMs = properties.getReadTimeoutMs();
         HttpClient httpClient = HttpClient.create()
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, readTimeoutMs)

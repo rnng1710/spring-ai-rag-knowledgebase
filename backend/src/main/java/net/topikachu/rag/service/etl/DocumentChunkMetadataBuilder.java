@@ -30,6 +30,7 @@ public class DocumentChunkMetadataBuilder {
         metadata.put("allowed_dept_ids", storedDocument == null || storedDocument.getAllowedDeptIds() == null
                 ? List.of()
                 : List.copyOf(storedDocument.getAllowedDeptIds()));
+        // storedDocument 为 null 时（ETL 尚未关联到持久化记录）默认视为公开，后续可通过 ACL 刷新修正
         metadata.put("is_public", storedDocument == null || Boolean.TRUE.equals(storedDocument.getIsPublic()));
         metadata.put("acl_version", aclVersion == null ? 1 : aclVersion);
 
@@ -46,6 +47,7 @@ public class DocumentChunkMetadataBuilder {
         copyIfPresent(currentChunkMetadata, metadata, "child_index");
         copyIfPresent(currentChunkMetadata, metadata, "evidence_id");
         copyIfPresent(currentChunkMetadata, metadata, "chunk_schema_version");
+        copyIfPresent(currentChunkMetadata, metadata, "source_location");
         return metadata;
     }
 
@@ -55,6 +57,7 @@ public class DocumentChunkMetadataBuilder {
         }
     }
 
+    // storedDocument 为 null 或未指定 spaceCode 时默认归入 "public" 空间，保证向量数据始终可分空间检索
     private String resolveSpaceCode(Document storedDocument) {
         if (storedDocument == null || !StringUtils.hasText(storedDocument.getSpaceCode())) {
             return "public";

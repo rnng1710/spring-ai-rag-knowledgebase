@@ -208,6 +208,7 @@ const submitDeptForm = async () => {
     if (!editingUserId.value) return;
     deptSubmitting.value = true;
     try {
+        // 两次串行调用：updateUserDepartment 和 updateUserDefaultSpace 是独立 API，无批量更新接口
         await updateUserDepartment(editingUserId.value, {
             deptId: deptForm.deptId,
             deptName: deptForm.deptName

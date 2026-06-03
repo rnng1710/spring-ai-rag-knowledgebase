@@ -40,6 +40,7 @@ public class AuthController {
             return Mono.just(AjaxResult.error(400, "Username and password are required"));
         }
 
+        // sysUserService 是阻塞 JDBC 调用，必须 offload 到 boundedElastic，避免阻塞 Netty 事件循环
         return Mono.fromCallable(() -> sysUserService.login(username, password))
                 .subscribeOn(Schedulers.boundedElastic())
                 .map(AjaxResult::success)
@@ -123,6 +124,7 @@ public class AuthController {
     @PostMapping("/refresh")
     public Mono<AjaxResult> refresh(@RequestHeader(value = "Authorization", required = false) String authHeader,
             @RequestBody(required = false) Map<String, String> body) {
+        // 双来源获取 refresh token：同时支持 Authorization header 和 request body，header 优先出于日志安全
         String refreshToken = null;
         if (StringUtils.hasText(authHeader) && authHeader.startsWith("Bearer ")) {
             refreshToken = authHeader.substring(7);
@@ -135,6 +137,7 @@ public class AuthController {
         }
 
         final String token = refreshToken;
+        // 手动解码 JWT 而非依赖 Spring Security 过滤器：refresh token 的 claim 结构和过期规则与 access token 不同
         return Mono.fromCallable(() -> {
                     Jwt jwt = jwtDecoder.decode(token);
                     if (jwt.getExpiresAt() != null && jwt.getExpiresAt().isBefore(Instant.now())) {

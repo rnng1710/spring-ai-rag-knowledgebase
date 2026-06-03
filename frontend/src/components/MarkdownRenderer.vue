@@ -39,7 +39,8 @@ md.renderer.rules.fence = function (tokens, idx, options, env, self) {
   // We need the raw content for copying
   const rawCode = token.content;
   // Encode safely for data attribute
-  const encodedCode = encodeURIComponent(rawCode); 
+  // URI 编码后存入 data 属性：代码含 HTML 特殊字符（<、>、&、"等），直接嵌入会破坏 DOM 结构
+  const encodedCode = encodeURIComponent(rawCode);
   
   const highlighted = defaultRender(tokens, idx, options, env, self);
   

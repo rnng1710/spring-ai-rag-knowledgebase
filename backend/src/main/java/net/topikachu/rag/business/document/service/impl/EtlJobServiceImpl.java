@@ -69,6 +69,7 @@ public class EtlJobServiceImpl implements EtlJobService {
         etlJob.setUpdateDate(LocalDateTime.now());
         etlJob.setUpdateUserId(createUserId);
         etlJob.setUpdateUserName(createUserId);
+        // activeKey = docUuid:JOB_TYPE，复合唯一键保证同文档同类型不重复入队
         etlJob.setActiveKey(activeKey(doc.getDocUuid()));
         etlJob.setObjectKey(objectKey);
 
@@ -78,6 +79,7 @@ public class EtlJobServiceImpl implements EtlJobService {
                 throw new IllegalStateException("Insert etl_job failed: docUuid=" + etlJob.getDocUuid());
             }
         } catch (DuplicateKeyException duplicateKeyException) {
+            // 唯一键冲突说明并发请求已入队，重新查询确认：乐观锁风格的竞态防护，不抛异常
             EtlJob activeJob = findActiveEtlJob(doc.getDocUuid());
             if (activeJob != null) {
                 log.info("ETL job already queued by concurrent request: docUuid={}, jobId={}, status={}",
@@ -192,7 +194,9 @@ public class EtlJobServiceImpl implements EtlJobService {
                         .set(EtlJob::getUpdateDate, updateTime)
                         .set(EtlJob::getLastError, trimToLength(lastError, 1000))
                         .set(EtlJob::getErrorStack, trimToLength(errorStack, 2000))
-                        .setSql("next_retry_time = CASE (IFNULL(retry_count, 0) + 1) " +
+                        // 用 SQL CASE 批量计算重试时间和 activeKey 清空：一次原子更新避免与任务调度器并发冲突
+                        // 指数退避：第 1 次 5min → 第 2 次 15min → 第 3 次 60min，超过 max_retry_count 则清空 activeKey 不再调度
+                .setSql("next_retry_time = CASE (IFNULL(retry_count, 0) + 1) " +
                                 "WHEN 1 THEN DATE_ADD(NOW(), INTERVAL 5 MINUTE) " +
                                 "WHEN 2 THEN DATE_ADD(NOW(), INTERVAL 15 MINUTE) " +
                                 "WHEN 3 THEN DATE_ADD(NOW(), INTERVAL 60 MINUTE) " +

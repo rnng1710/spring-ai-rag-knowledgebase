@@ -91,6 +91,7 @@ public class AutoEvaluationService {
                     run.setStartedAt(LocalDateTime.now());
                     runMapper.insert(run);
 
+                    // 异步触发评估管线后立即返回 runId：调用方无需等待评估完成，通过 runId 后续查询进度
                     doRun(runId)
                             .doOnError(e -> log.error("RAGAS auto evaluation run failed runId={}", runId, e))
                             .onErrorResume(e -> markRunFailed(runId, e.getMessage()).then())
@@ -305,6 +306,7 @@ public class AutoEvaluationService {
         }
     }
 
+    // 乐观锁风格的分布式锁：先 INSERT 或刷新过期锁，再比对 ownerId 确认获取成功
     private boolean acquireLock(String ownerId) {
         LocalDateTime now = LocalDateTime.now();
         LocalDateTime lockedUntil = now.plusMinutes(runTimeoutMinutes);
@@ -359,6 +361,7 @@ public class AutoEvaluationService {
                 .then();
     }
 
+    // 归一化到 [0,1] 并四舍五入到 4 位小数：RAGAS 原始分数可能在 0-1 范围外或为 NaN/Infinity
     private BigDecimal normalizeScore(Double score) {
         if (score == null || score.isNaN() || score.isInfinite()) {
             return null;
@@ -377,6 +380,7 @@ public class AutoEvaluationService {
         return null;
     }
 
+    // 对参考答案做 SHA-256 哈希用于去重：同一评估项 + 同一参考答案不应重复评分，hash 不同才允许重新评估
     private String referenceHash(String reference) {
         if (!StringUtils.hasText(reference)) {
             return NO_REFERENCE;

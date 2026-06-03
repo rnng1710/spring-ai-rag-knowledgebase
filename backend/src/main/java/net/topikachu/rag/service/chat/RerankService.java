@@ -52,6 +52,7 @@ public class RerankService {
         Map<String, Object> requestBody = new HashMap<>();
         requestBody.put("query", query);
         requestBody.put("texts", texts); // TEI uses "texts" not "documents"
+        // truncate=false：长文本不截断，保证 Cross-Encoder 看到完整上下文，截断会丢失关键信息
         requestBody.put("truncate", false);
 
         return webClient.post()

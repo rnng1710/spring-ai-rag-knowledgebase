@@ -9,10 +9,12 @@ export interface EtlMessage {
 
 export type MessageHandler = (msg: EtlMessage) => void;
 
+// 模块级 AbortController：全局仅维持一条 SSE 连接，新连接前中止旧的避免重复订阅
 let controller: AbortController | null = null;
 
 export const connectSse = async (onMessage: MessageHandler) => {
     if (controller) {
+        // 重连前先中止旧连接：避免多个 SSE 流并存导致重复消息
         controller.abort();
     }
     controller = new AbortController();
@@ -97,6 +99,7 @@ export const connectSse = async (onMessage: MessageHandler) => {
         if (e.name !== "AbortError") {
             console.error("SSE stream error", e);
             // Reconnect logic could go here (with backoff)
+            // 5 秒后重连：避免连接失败时立即重试导致请求风暴
             setTimeout(() => connectSse(onMessage), 5000);
         }
     }

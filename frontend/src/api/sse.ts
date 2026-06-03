@@ -53,6 +53,7 @@ export const streamSsePost = async (
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
+    // stream: true：多字节 UTF-8 字符可能被分割到不同 chunk，流模式让 TextDecoder 缓存不完整字节
     buffer += decoder.decode(value, { stream: true });
 
     // Split by double newline (SSE block separator)
@@ -68,6 +69,7 @@ export const streamSsePost = async (
         if (line.startsWith("event:")) {
           eventType = line.replace(/^event:\s?/, "").trim();
         } else if (line.startsWith("data:")) {
+          // SSE 规范允许 data 字段跨多行：逐行累积后用 trim() 去除末尾换行
           dataBuffer += line.replace(/^data:\s?/, "") + "\n";
         }
       }

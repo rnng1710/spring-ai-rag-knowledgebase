@@ -42,6 +42,7 @@ public class MinioObjectStorageService implements ObjectStorageService {
                 .then();
     }
 
+    // 下载到本地临时文件：ETL 管道需要多次读取和随机访问，InputStream 只能消费一次无法满足
     @Override
     public Mono<Path> downloadToTempFile(String objectKey, String fileName) {
         return Mono.fromCallable(() -> {
@@ -82,6 +83,7 @@ public class MinioObjectStorageService implements ObjectStorageService {
                                         .build()
                         );
                     } catch (ErrorResponseException e) {
+                        // 幂等删除：对象不存在视为成功，避免调用方需先检查存在性
                         if ("NoSuchKey".equals(e.errorResponse().code())
                                 || "NoSuchObject".equals(e.errorResponse().code())) {
                             return null;
@@ -135,6 +137,7 @@ public class MinioObjectStorageService implements ObjectStorageService {
         }
     }
 
+    // 防止路径遍历攻击：校验 objectKey 不含 ../  ./  或绝对路径前缀，保障桶内隔离
     private void validateObjectKey(String objectKey) {
         if (!StringUtils.hasText(objectKey)) {
             throw new IllegalArgumentException("ObjectKey is required");

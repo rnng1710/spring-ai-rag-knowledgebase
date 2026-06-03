@@ -38,6 +38,7 @@ const router = createRouter({
 });
 
 router.beforeEach(async (to) => {
+  // 静默刷新过期 token：路由跳转时先尝试 refresh，失败才跳转登录页，避免用户已登录但 token 刚过期被踢出
   let token = getAccessToken();
   if (token && isTokenExpired(token)) {
     try {
@@ -69,6 +70,7 @@ router.beforeEach(async (to) => {
     .map((record) => (record.meta as AppRouteMeta).role)
     .find((metaRole): metaRole is AppRole => !!metaRole);
 
+  // 角色不匹配时重定向到各自首页：ADMIN 访问 /user/chat 或 USER 访问 /admin 均跳回自己主页
   if (requiredRole && role !== requiredRole) {
     return role === "ADMIN" ? "/admin/index" : "/user/chat";
   }

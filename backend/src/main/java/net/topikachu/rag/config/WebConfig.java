@@ -23,6 +23,7 @@ public class WebConfig {
                         .bodyValue(indexHtml));
     }
 
+    // SPA fallback：非 API/actuator/静态资源的 GET 请求统一返回 index.html，由 Vue Router 处理前端路由
     private boolean isSpaRequest(ServerRequest request) {
         String path = request.path();
         return request.method().name().equals("GET")

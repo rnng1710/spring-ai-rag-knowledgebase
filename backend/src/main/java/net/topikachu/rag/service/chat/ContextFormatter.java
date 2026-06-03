@@ -13,6 +13,7 @@ import java.util.function.Function;
 @Slf4j
 public class ContextFormatter {
 
+    // 40000 字符约等于 10000 token（中英文混合），预留足够空间给 system prompt 和对话历史
     @Value("${rag.retrieval.max-context-chars:40000}")
     private int maxContextChars;
 
@@ -20,6 +21,8 @@ public class ContextFormatter {
         return format(docs, Document::getText, Document::getMetadata);
     }
 
+    // 将父块上下文列表格式化为 LLM Prompt 中的结构化证据块
+    // 每个父块包含：来源文件+位置、parent_block_id、可引用的 evidence_id 列表、完整段落内容
     public String formatParentContexts(List<ParentContextBlock> parentContexts) {
         StringBuilder contextBuilder = new StringBuilder();
         for (int i = 0; i < parentContexts.size(); i++) {
@@ -35,11 +38,12 @@ public class ContextFormatter {
                                     ------------------------
                                     """,
                     i + 1,
-                    sourceLabel(block),
-                    block.parentBlockId(),
-                    formatEvidenceIds(block.evidenceIds()),
-                    block.content());
+                    sourceLabel(block),               // 如 "员工手册.pdf · 第3-4页" 或 "保密协议.docx · 违约责任 > 赔偿标准"
+                    block.parentBlockId(),            // 父块唯一标识，LLM 不需要用，调试/追踪用
+                    formatEvidenceIds(block.evidenceIds()),  // 该父块下被命中的子块 evidence_id 清单，LLM 引用时用
+                    block.content());                 // 父块 1200 字完整段落，LLM 推理的核心依据
 
+            // 超长保护：上下文总长度超过 maxContextChars(40000) 时截断，避免撑爆 token 窗口
             if (contextBuilder.length() + structuredEntry.length() > maxContextChars) {
                 log.warn("Parent context limit reached, dropping remaining parent blocks from rank {}", i);
                 break;
@@ -90,6 +94,7 @@ public class ContextFormatter {
         return page.toString();
     }
 
+    // 拼接来源标签：PDF 显示"文件名 · 第N页"，非 PDF 显示"文件名 · 片段N"
     private String sourceLabel(ParentContextBlock block) {
         String filename = block.fileName() == null ? "Unknown Source" : block.fileName();
         if (block.pageStart() != null && block.pageEnd() != null) {
@@ -101,6 +106,7 @@ public class ContextFormatter {
         return filename + " · 片段" + block.parentIndex();
     }
 
+    // 将 evidence_id 列表格式化为 LLM 可读的清单，每行一条 "- doc_uuid:child:N:hash"
     private String formatEvidenceIds(List<String> evidenceIds) {
         if (evidenceIds == null || evidenceIds.isEmpty()) {
             return "- 无";

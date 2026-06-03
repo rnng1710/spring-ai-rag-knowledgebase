@@ -39,6 +39,7 @@ public class TracingSupport {
     }
 
     public <T> Mono<T> traceMono(String name, Map<String, ?> tags, Mono<T> publisher) {
+        // Mono.defer 延迟创建 Span：确保在订阅时（而非装配时）捕获 Trace 上下文，避免父线程污染
         return Mono.defer(() -> {
             Span span = startSpan(name, tags);
             if (span == null) {

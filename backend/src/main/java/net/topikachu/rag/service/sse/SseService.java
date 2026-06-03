@@ -17,7 +17,9 @@ public class SseService {
     private final Map<String, Sinks.Many<ServerSentEvent<Object>>> emitters = new ConcurrentHashMap<>();
 
     public Flux<ServerSentEvent<Object>> subscribe(String userId) {
+        // multicast 支持用户多标签页同时接收；onBackpressureBuffer 保证 ETL 进度事件不丢包
         Sinks.Many<ServerSentEvent<Object>> sink = Sinks.many().multicast().onBackpressureBuffer();
+        // 重新订阅时完成旧 sink：防止页面刷新后旧 sink 泄漏导致内存泄漏
         Sinks.Many<ServerSentEvent<Object>> previous = emitters.put(userId, sink);
         if (previous != null) {
             previous.tryEmitComplete();
@@ -32,6 +34,7 @@ public class SseService {
 
         return Flux.concat(Flux.just(initEvent), sink.asFlux())
                 .doFinally(signal -> {
+                    // 按身份移除（2-arg remove）：快速重订阅时避免误删新活跃订阅
                     emitters.remove(userId, sink);
                     log.debug("SSE closed for user={}, signal={}", userId, signal);
                 });
@@ -43,6 +46,7 @@ public class SseService {
             return;
         }
 
+        // sink 为 null 时静默返回：多实例部署下非持有该用户连接的实例无事可做
         Sinks.Many<ServerSentEvent<Object>> sink = emitters.get(userId);
         if (sink == null) {
             return;

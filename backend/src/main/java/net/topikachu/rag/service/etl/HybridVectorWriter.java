@@ -75,11 +75,12 @@ public class HybridVectorWriter {
                                     TextSanitizer.preview(doc.getText()),
                                     error.getMessage());
                             return Mono.empty();
-                        }), 4)
+                        }), 4)  // concurrency=4：限制并行 TEI 调用，避免同时发起过多请求压垮嵌入服务
                 .collectList();
 
         return tracingSupport.traceMono("etl.embed", traceTags, embedRows)
                 .flatMap(rows -> {
+                    // 所有块嵌入均失败时（如嵌入服务宕机），拒绝写入空数据到 Milvus，让上层重试
                     if (rows.isEmpty()) {
                         return Mono.error(new IllegalStateException("All document chunks failed embedding"));
                     }

@@ -8,6 +8,7 @@ import reactor.core.publisher.Mono;
 @Slf4j
 public class EtlJobStarter {
 
+    // 发射后不管：任务的最终状态由数据库状态机记录，订阅时不需处理成功回调
     public void start(Mono<Void> job, String description) {
         job.subscribe(
                 null,

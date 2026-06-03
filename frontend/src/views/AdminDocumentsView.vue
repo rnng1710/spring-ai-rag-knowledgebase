@@ -261,6 +261,7 @@ onMounted(async () => {
   await Promise.all([loadData(), loadTags()]);
   startStatusPolling();
   // Connect SSE
+  // SSE 静默更新：收到 ETL 状态变更时直接更新表格行状态，无需整页刷新
   connectSse((msg: EtlMessage) => {
       // Find row
       const target = tableData.value.find(d => d.docUuid === msg.docUuid);
@@ -308,12 +309,14 @@ const loadData = async (showLoading = true) => {
   }
 };
 
+// ETL 中间态集合：这些状态表示文档正在处理中，需轮询刷新直到变为 COMPLETED 或 FAILED
 const processingStatuses = new Set(["UPLOADED", "READING", "SPLITTING", "VECTORIZING"]);
 
 const hasProcessingDocs = () => tableData.value.some(doc => processingStatuses.has(doc.status));
 
 const startStatusPolling = () => {
   stopStatusPolling();
+  // 3 秒轮询间隔：ETL 处理通常 5-30 秒，3 秒足够及时更新且不造成过大后端压力
   statusPollingTimer = window.setInterval(() => {
     if (!loading.value && hasProcessingDocs()) {
       loadData(false);

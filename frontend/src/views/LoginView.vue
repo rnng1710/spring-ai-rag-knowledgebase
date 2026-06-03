@@ -57,6 +57,7 @@ const login = async () => {
 
         const resolvedRole = getRoleFromAccessToken(tokens.access_token);
         const resolvedUsername = getUsernameFromAccessToken(tokens.access_token);
+        // JWT 解析失败时清除残留会话数据：防止无效 token 导致后续请求陷入 401 循环
         if (!resolvedRole || !resolvedUsername) {
             clearAuthSession();
           throw new Error(t("auth.invalidToken"));

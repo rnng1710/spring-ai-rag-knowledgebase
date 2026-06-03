@@ -5,7 +5,13 @@
     </div>
 
     <!-- 统计卡片区 -->
-    <div class="stat-grid" style="margin-bottom: 24px;">
+    <div v-if="statsLoading" class="stat-loading">
+      <el-skeleton :rows="1" animated />
+    </div>
+    <div v-else-if="statsError" class="stat-error">
+      <el-alert :title="statsError" type="error" show-icon :closable="false" />
+    </div>
+    <div v-else class="stat-grid" style="margin-bottom: 24px;">
       <div class="stat-card card">
         <div class="stat-icon documents"><el-icon><Document /></el-icon></div>
         <div class="stat-info">
@@ -30,7 +36,7 @@
       <div class="stat-card card">
         <div class="stat-icon satisfaction"><el-icon><Star /></el-icon></div>
         <div class="stat-info">
-          <div class="stat-value">{{ stats.satisfaction }}%</div>
+          <div class="stat-value">{{ stats.satisfaction === -1 ? '暂无数据' : stats.satisfaction + '%' }}</div>
           <div class="stat-label">用户满意度</div>
         </div>
       </div>
@@ -39,6 +45,15 @@
         <div class="stat-info">
           <div class="stat-value">{{ stats.systemStatus === 'ONLINE' ? '运行中' : '异常' }}</div>
           <div class="stat-label">系统状态</div>
+        </div>
+      </div>
+      <div class="stat-card card">
+        <div class="stat-icon etl"><el-icon><DataAnalysis /></el-icon></div>
+        <div class="stat-info">
+          <div class="stat-value" :class="{ 'stat-muted': stats.etlStats.totalJobs === 0 }">
+            {{ stats.etlStats.totalJobs === 0 ? '暂无数据' : stats.etlStats.successRate + '%' }}
+          </div>
+          <div class="stat-label">ETL 成功率</div>
         </div>
       </div>
     </div>
@@ -80,7 +95,7 @@ import { useRouter } from "vue-router";
 import { apiUrl } from "../api/client";
 import { streamSsePost } from "../api/sse";
 import { useI18n } from "vue-i18n";
-import { Document, CopyDocument, User, Monitor, RefreshRight, Star } from '@element-plus/icons-vue';
+import { Document, CopyDocument, User, Monitor, RefreshRight, Star, DataAnalysis } from '@element-plus/icons-vue';
 import { getDashboardStats, DashboardStats } from "../api/dashboard";
 
 const router = useRouter();
@@ -90,19 +105,31 @@ const output = ref("");
 const status = ref(t("adminIndex.idle"));
 const loading = ref(false);
 
+const statsLoading = ref(true);
+const statsError = ref("");
+
 const stats = ref<DashboardStats>({
   totalDocuments: 0,
   totalChunks: 0,
   totalUsers: 0,
   satisfaction: 0,
-  systemStatus: "ONLINE"
+  systemStatus: "ONLINE",
+  etlStats: {
+    totalJobs: 0,
+    successJobs: 0,
+    failedJobs: 0,
+    successRate: 0
+  }
 });
 
 onMounted(async () => {
   try {
     stats.value = await getDashboardStats();
-  } catch (e) {
+  } catch (e: any) {
+    statsError.value = e?.message || "加载统计数据失败";
     console.error("Failed to load dashboard stats", e);
+  } finally {
+    statsLoading.value = false;
   }
 });
 
@@ -131,23 +158,24 @@ const startIndexing = async () => {
 <style scoped>
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 20px;
 }
 .stat-card {
   display: flex;
   align-items: center;
-  padding: 24px;
-  gap: 20px;
+  padding: 20px;
+  gap: 16px;
 }
 .stat-icon {
-  width: 56px;
-  height: 56px;
-  border-radius: 16px;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 28px;
+  font-size: 24px;
+  flex-shrink: 0;
 }
 .stat-icon.documents { background: rgba(64, 158, 255, 0.1); color: #409eff; }
 .stat-icon.chunks { background: rgba(103, 194, 58, 0.1); color: #67c23a; }
@@ -155,21 +183,32 @@ const startIndexing = async () => {
 .stat-icon.satisfaction { background: rgba(245, 108, 108, 0.1); color: #f56c6c; }
 .stat-icon.status { background: rgba(64, 158, 255, 0.1); color: #409eff; }
 .stat-icon.status.is-offline { background: rgba(245, 108, 108, 0.1); color: #f56c6c; }
+.stat-icon.etl { background: rgba(103, 194, 58, 0.1); color: #67c23a; }
+
+.stat-muted {
+  font-size: 14px;
+  color: var(--chat-text-secondary, #999);
+}
 
 .stat-info {
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 .stat-value {
-  font-size: 28px;
+  font-size: 24px;
   font-weight: 700;
   color: var(--chat-text-primary, #1e1e1e);
   line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .stat-label {
-  font-size: 14px;
+  font-size: 13px;
   color: var(--chat-text-secondary, #666);
   margin-top: 4px;
+  white-space: nowrap;
 }
 
 .operation-card {
@@ -198,5 +237,17 @@ const startIndexing = async () => {
 .status-pill.active {
   background: var(--primary-color, #409eff);
   color: #fff;
+}
+
+.stat-loading {
+  margin-bottom: 24px;
+  padding: 20px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+}
+
+.stat-error {
+  margin-bottom: 24px;
 }
 </style>
