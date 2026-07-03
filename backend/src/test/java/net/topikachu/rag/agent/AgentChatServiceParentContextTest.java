@@ -1,6 +1,7 @@
 package net.topikachu.rag.agent;
 
 import net.topikachu.rag.ai.memory.BlockingChatMemoryService;
+import net.topikachu.rag.chat.history.ChatHistoryService;
 import net.topikachu.rag.evaluation.service.EvaluationPersistenceService;
 import net.topikachu.rag.observability.TracingSupport;
 import net.topikachu.rag.service.chat.ContextFormatter;
@@ -58,6 +59,9 @@ class AgentChatServiceParentContextTest {
     @Mock
     private org.springframework.ai.chat.client.ChatClient chatClient;
 
+    @Mock
+    private ChatHistoryService chatHistoryService;
+
     @Test
     void finalAnswerPromptUsesParentContext() {
         ContextFormatter contextFormatter = new ContextFormatter();
@@ -72,7 +76,8 @@ class AgentChatServiceParentContextTest {
                 persistenceService,
                 tracingSupport,
                 contextFormatter,
-                new UsedSourceValidator());
+                new UsedSourceValidator(),
+                chatHistoryService);
         ParentContextBlock parent = new ParentContextBlock(
                 "parent-1",
                 "doc-1",

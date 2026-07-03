@@ -1,113 +1,33 @@
 package net.topikachu.rag.ai.memory;
 
-import com.fasterxml.jackson.annotation.JsonTypeInfo;
-import com.fasterxml.jackson.core.JacksonException;
-import com.fasterxml.jackson.core.JsonGenerator;
-import com.fasterxml.jackson.core.JsonParser;
-import com.fasterxml.jackson.core.JsonToken;
-import com.fasterxml.jackson.core.type.WritableTypeId;
-import com.fasterxml.jackson.databind.*;
-import com.fasterxml.jackson.databind.jsontype.TypeSerializer;
-import com.fasterxml.jackson.databind.module.SimpleModule;
-import org.springframework.ai.chat.messages.*;
+import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.ai.chat.memory.ChatMemoryRepository;
+import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.data.redis.serializer.GenericJackson2JsonRedisSerializer;
-
-import java.io.IOException;
-import java.util.List;
-import java.util.Map;
-
-import static com.fasterxml.jackson.databind.ObjectMapper.DefaultTyping;
+import org.springframework.data.redis.serializer.RedisSerializer;
+import org.springframework.data.redis.serializer.StringRedisSerializer;
 
 @Configuration(proxyBeanMethods = false)
 public class RedisChatMemoryRepositoryConfiguration {
 
 	@Bean
-	public RedisChatMemoryRepository redisChatMemoryRepository(RedisConnectionFactory redisConnectionFactory) {
-		RedisTemplate<String, Message> template = new RedisTemplate<>();
+	public RedisTemplate<String, byte[]> chatMemoryRedisTemplate(RedisConnectionFactory redisConnectionFactory) {
+		RedisTemplate<String, byte[]> template = new RedisTemplate<>();
 		template.setConnectionFactory(redisConnectionFactory);
-		var serializer = new GenericJackson2JsonRedisSerializer(createObjectMapper());
-		template.setValueSerializer(serializer);
+		template.setKeySerializer(new StringRedisSerializer());
+		template.setValueSerializer(RedisSerializer.byteArray());
 		template.afterPropertiesSet();
-		return new RedisChatMemoryRepository(template);
+		return template;
 	}
 
-
-
-	ObjectMapper createObjectMapper() {
-		ObjectMapper objectMapper = new ObjectMapper();
-		SimpleModule simpleModule = new SimpleModule();
-		simpleModule.addSerializer(Message.class, new MessageJsonSerializer());
-		simpleModule.addDeserializer(UserMessage.class, new JsonDeserializer<>() {
-			@Override
-			public UserMessage deserialize(JsonParser p, DeserializationContext ctxt) throws IOException, JacksonException {
-				p.nextToken();
-				var content = p.getValueAsString();
-				p.nextToken();
-
-				return UserMessage.builder()
-						.text(content)
-						.build();
-			}
-		});
-		simpleModule.addDeserializer(AssistantMessage.class, new JsonDeserializer<>() {
-			@Override
-			public AssistantMessage deserialize(JsonParser p, DeserializationContext ctxt) throws IOException, JacksonException {
-				p.nextToken();
-				var content = p.getValueAsString();
-				p.nextToken();
-
-				return new AssistantMessage(content);
-
-			}
-		});
-		simpleModule.addDeserializer(SystemMessage.class, new JsonDeserializer<>() {
-			@Override
-			public SystemMessage deserialize(JsonParser p, DeserializationContext ctxt) throws IOException, JacksonException {
-				p.nextToken();
-				var content = p.getValueAsString();
-				p.nextToken();
-
-				return SystemMessage.builder()
-						.text(content)
-						.build();
-			}
-		});
-		simpleModule.addDeserializer(ToolResponseMessage.class, new JsonDeserializer<>() {
-			@Override
-			public ToolResponseMessage deserialize(JsonParser p, DeserializationContext ctxt) throws IOException, JacksonException {
-				p.nextToken();
-				p.nextToken();
-				return ToolResponseMessage.builder()
-						.responses(List.<ToolResponseMessage.ToolResponse>of())
-						.metadata(Map.of())
-						.build();
-			}
-		});
-		objectMapper.registerModule(simpleModule);
-		objectMapper.setDefaultTyping(
-				new ObjectMapper.DefaultTypeResolverBuilder(DefaultTyping.EVERYTHING, objectMapper.getPolymorphicTypeValidator())
-						.init(JsonTypeInfo.Id.CLASS, null)
-						.inclusion(JsonTypeInfo.As.PROPERTY));
-		return objectMapper;
-	}
-
-
-	static class MessageJsonSerializer extends JsonSerializer<Message> {
-		@Override
-		public void serialize(Message value, JsonGenerator gen, SerializerProvider serializers) throws IOException {
-			var content = value.getText();
-			gen.writeStringField("content", content);
-		}
-
-		@Override
-		public void serializeWithType(Message value, JsonGenerator g, SerializerProvider provider, TypeSerializer typeSer) throws IOException {
-			WritableTypeId typeIdDef = typeSer.writeTypePrefix(g, typeSer.typeId(value, JsonToken.START_OBJECT));
-			this.serialize(value, g, provider);
-			typeSer.writeTypeSuffix(g, typeIdDef);
-		}
+	@Bean
+	public ChatMemory chatMemory(ChatMemoryRepository chatMemoryRepository) {
+		return MessageWindowChatMemory.builder()
+				.chatMemoryRepository(chatMemoryRepository)
+				.maxMessages(20)
+				.build();
 	}
 }

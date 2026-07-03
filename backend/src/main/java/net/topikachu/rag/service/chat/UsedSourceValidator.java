@@ -14,7 +14,7 @@ import java.util.Map;
 @Slf4j
 public class UsedSourceValidator {
 
-    public static final String UNRELIABLE_SOURCE_MESSAGE = "无法可靠生成带溯源的答案，请缩小问题范围或稍后重试。";
+    public static final String UNRELIABLE_SOURCE_MESSAGE = "根据当前知识库，暂未找到合理解答。";
     public static final String REASON_ANSWER_MISSING = "answer_missing";
     public static final String REASON_USED_SOURCES_EMPTY = "used_sources_empty";
     public static final String REASON_EVIDENCE_ID_MISSING = "evidence_id_missing";
