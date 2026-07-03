@@ -117,7 +117,7 @@ public class AgentOrchestrator {
                         AgentResolution.class)
                 .map(resolution -> toExecutionResult(executionContext, resolution))
                 // switchIfEmpty 而非 defaultIfEmpty：仅当模型未输出有效 JSON 时才惰性触发回落
-                .switchIfEmpty(Mono.fromSupplier(() -> noEvidenceFollowup(executionContext)))
+                .switchIfEmpty(Mono.fromSupplier(() -> noEvidenceFollowup(executionContext.snapshot())))
                 .doOnError(error -> log.error("Agent tool phase failed. conversationId={}, msgId={}", conversationId, msgId, error))
                 .subscribeOn(agentOrchestratorScheduler);
 
@@ -139,8 +139,9 @@ public class AgentOrchestrator {
     }
 
     private AgentExecutionResult toExecutionResult(AgentExecutionContext executionContext, AgentResolution resolution) {
+        AgentExecutionSnapshot snapshot = executionContext.snapshot();
         if (resolution == null) {
-            return noEvidenceFollowup(executionContext);
+            return noEvidenceFollowup(snapshot);
         }
 
         String type = normalizeType(resolution.type());
@@ -148,11 +149,12 @@ public class AgentOrchestrator {
 
         if ("followup".equals(type)) {
             executionContext.addNote(AgentStage.FOLLOWUP, "decision", "当前证据不足，转为点击式追问。");
-            FollowupSuggestion suggestion = resolveFollowupSuggestion(executionContext);
+            snapshot = executionContext.snapshot();
+            FollowupSuggestion suggestion = resolveFollowupSuggestion(snapshot);
             return new AgentExecutionResult(
                     List.of(),
                     List.of(),
-                    sortNotes(executionContext.notes()),
+                    sortNotes(snapshot.notes()),
                     suggestion.prompt(),
                     suggestion.options(),
                     null,
@@ -163,10 +165,11 @@ public class AgentOrchestrator {
 
         if ("refusal".equals(answerMode)) {
             executionContext.addNote(AgentStage.GENERATING_FINAL, "decision", "知识库无法回答该问题，返回拒答说明。");
+            snapshot = executionContext.snapshot();
             return new AgentExecutionResult(
                     List.of(),
                     List.of(),
-                    sortNotes(executionContext.notes()),
+                    sortNotes(snapshot.notes()),
                     null,
                     List.of(),
                     defaultRefusalDraft(resolution.draftAnswer()),
@@ -175,20 +178,25 @@ public class AgentOrchestrator {
                     false);
         }
 
-        List<EvidenceSnapshot> selectedEvidence = executionContext.selectEvidence(resolution.selectedEvidenceIds());
+        List<EvidenceSnapshot> selectedEvidence = AgentEvidenceSelector.selectEvidence(
+                snapshot.retrievedEvidence(),
+                resolution.selectedEvidenceIds());
         // 模型返回 answer 但未选中任何证据：防止模型在无证据支撑下产生幻觉回答，强制回退为追问
         if (selectedEvidence.isEmpty()) {
             executionContext.addNote(AgentStage.FOLLOWUP, "decision", "模型未选中有效证据，回退为点击式追问。");
-            return noEvidenceFollowup(executionContext);
+            return noEvidenceFollowup(executionContext.snapshot());
         }
         List<ParentContextBlock> selectedParentContexts =
-                executionContext.selectParentContextsForEvidence(resolution.selectedEvidenceIds());
+                AgentEvidenceSelector.selectParentContextsForEvidence(
+                        snapshot.retrievedParentContexts(),
+                        resolution.selectedEvidenceIds());
 
         executionContext.addNote(AgentStage.GENERATING_FINAL, "decision", "已完成证据选择，准备生成最终答案。");
+        snapshot = executionContext.snapshot();
         return new AgentExecutionResult(
                 List.copyOf(selectedEvidence),
                 selectedParentContexts,
-                sortNotes(executionContext.notes()),
+                sortNotes(snapshot.notes()),
                 null,
                 List.of(),
                 resolution.draftAnswer(),
@@ -197,12 +205,12 @@ public class AgentOrchestrator {
                 resolution.finalInstruction() != null && !resolution.finalInstruction().isBlank());
     }
 
-    private AgentExecutionResult noEvidenceFollowup(AgentExecutionContext executionContext) {
-        FollowupSuggestion suggestion = resolveFollowupSuggestion(executionContext);
+    private AgentExecutionResult noEvidenceFollowup(AgentExecutionSnapshot snapshot) {
+        FollowupSuggestion suggestion = resolveFollowupSuggestion(snapshot);
         return new AgentExecutionResult(
                 List.of(),
                 List.of(),
-                sortNotes(executionContext.notes()),
+                sortNotes(snapshot.notes()),
                 suggestion.prompt(),
                 suggestion.options(),
                 null,
@@ -211,12 +219,12 @@ public class AgentOrchestrator {
                 false);
     }
 
-    private FollowupSuggestion resolveFollowupSuggestion(AgentExecutionContext executionContext) {
-        FollowupOptionsResult candidate = executionContext.followupOptionsCandidate();
+    private FollowupSuggestion resolveFollowupSuggestion(AgentExecutionSnapshot snapshot) {
+        FollowupOptionsResult candidate = snapshot.followupOptionsCandidate();
         if (candidate != null && "ok".equals(candidate.status()) && isValidFollowupCandidate(candidate)) {
             return new FollowupSuggestion(FOLLOWUP_PROMPT, List.copyOf(candidate.options()), "tool");
         }
-        return buildFallbackSuggestion(executionContext.originalUserInput(), executionContext.retrievalGapType(), executionContext.allowedFocusTypes());
+        return buildFallbackSuggestion(snapshot.originalUserInput(), snapshot.retrievalGapType(), snapshot.allowedFocusTypes());
     }
 
     // 要求恰好 2 个选项和 focusType：UI 只渲染两个追问按钮，多于 2 个溢出布局，少于 2 个用户无选择余地

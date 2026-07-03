@@ -11,19 +11,13 @@ import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.regex.Pattern;
 
 public class AgentKnowledgeTools {
-
-    private static final Pattern TIME_PATTERN = Pattern.compile("(19|20)\\d{2}|\\d+月|\\d+日|今年|去年|目前|现在|当时");
-    private static final List<String> PROCEDURE_KEYWORDS = List.of("流程", "程序", "审批", "复审", "申诉", "听证", "步骤");
 
     private final AgentKnowledgeService knowledgeService;
     private final AgentExecutionContext executionContext;
@@ -109,7 +103,7 @@ public class AgentKnowledgeTools {
             return KnowledgeSearchResult.toolError("REPEATED_QUERY_LIMIT", "repeated query limit exceeded");
         }
 
-        if (executionContext.toolCalls() >= maxToolCalls) {
+        if (!executionContext.tryConsumeToolBudget(maxToolCalls)) {
             executionContext.addNote(AgentStage.RETRIEVING, "budget", "已达到工具调用上限，跳过本次检索。");
             executionContext.recordRetrieval(
                     request.query(),
@@ -122,7 +116,6 @@ public class AgentKnowledgeTools {
             return KnowledgeSearchResult.toolError("TOOL_BUDGET_EXCEEDED", "tool call budget exceeded");
         }
 
-        executionContext.incrementToolCalls();
         executionContext.incrementSearchInvocationCount();
 
         try {
@@ -140,18 +133,18 @@ public class AgentKnowledgeTools {
                     || retrievalResult.childCandidates().isEmpty()
                     || retrievalResult.parentContexts() == null
                     || retrievalResult.parentContexts().isEmpty()) {
-                executionContext.recordRetrieval(
+                executionContext.recordSearchResult(
                         request.query(),
                         normalizedQueryKey,
                         normalizeTags(request.tagsAnyOf()),
                         request.topK(),
                         "no_result",
                         0,
-                        List.of());
-                executionContext.updateRetrievalAssessment(
-                        RetrievalGapType.MISSING_SCOPE,
-                        true,
-                        List.of("scope", "time"));
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        RetrievalAssessmentPolicy.assess(request.query(), 0),
+                        maxEvidenceCount);
                 executionContext.addNote(AgentStage.RETRIEVING, "tool_result", "未检索到相关证据。");
                 return KnowledgeSearchResult.noResult();
             }
@@ -163,40 +156,41 @@ public class AgentKnowledgeTools {
             Set<String> availableEvidenceIds = evidence.stream()
                     .map(EvidenceSnapshot::id)
                     .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
-            List<ParentContextBlock> parentContexts = filterParentContexts(
+            List<ParentContextBlock> parentContexts = AgentEvidenceSelector.filterParentContexts(
                     retrievalResult.parentContexts(),
                     availableEvidenceIds);
             if (parentContexts.isEmpty()) {
-                executionContext.recordRetrieval(
+                executionContext.recordSearchResult(
                         request.query(),
                         normalizedQueryKey,
                         normalizeTags(request.tagsAnyOf()),
                         request.topK(),
                         "no_result",
                         0,
-                        List.of());
-                executionContext.updateRetrievalAssessment(
-                        RetrievalGapType.MISSING_SCOPE,
-                        true,
-                        List.of("scope", "time"));
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        RetrievalAssessmentPolicy.assess(request.query(), 0),
+                        maxEvidenceCount);
                 executionContext.addNote(AgentStage.RETRIEVING, "tool_result", "未检索到可引用的父级上下文块。");
                 return KnowledgeSearchResult.noResult();
             }
-            executionContext.addRetrievedEvidence(evidence, maxEvidenceCount);
-            executionContext.addRetrievedParentContexts(parentContexts);
             List<String> evidenceIds = parentContexts.stream()
                     .flatMap(context -> context.evidenceIds().stream())
                     .distinct()
                     .toList();
-            executionContext.recordRetrieval(
+            executionContext.recordSearchResult(
                     request.query(),
                     normalizedQueryKey,
                     normalizeTags(request.tagsAnyOf()),
                     request.topK(),
                     "ok",
                     parentContexts.size(),
-                    evidenceIds);
-            applyRetrievalAssessment(request.query(), parentContexts.size());
+                    evidenceIds,
+                    evidence,
+                    parentContexts,
+                    RetrievalAssessmentPolicy.assess(request.query(), parentContexts.size()),
+                    maxEvidenceCount);
             executionContext.addNote(AgentStage.RETRIEVING, "tool_result", "已检索到 " + parentContexts.size() + " 个父级上下文块。");
 
             List<KnowledgeSnippet> items = parentContexts.stream()
@@ -236,12 +230,10 @@ public class AgentKnowledgeTools {
     public KnowledgeTagList listAvailableTags() {
         executionContext.addNote(AgentStage.PLANNING, "tool_call", "调用工具 listAvailableTags 获取可用标签。");
 
-        if (executionContext.toolCalls() >= maxToolCalls) {
+        if (!executionContext.tryConsumeToolBudget(maxToolCalls)) {
             executionContext.addNote(AgentStage.PLANNING, "budget", "已达到工具调用上限，跳过本次标签查询。");
             return KnowledgeTagList.toolError("TOOL_BUDGET_EXCEEDED", "tool call budget exceeded");
         }
-
-        executionContext.incrementToolCalls();
 
         try {
             List<String> tags = toolBridge.block(
@@ -260,19 +252,20 @@ public class AgentKnowledgeTools {
     public FollowupOptionsResult generateFollowupOptions() {
         executionContext.addNote(AgentStage.FOLLOWUP, "tool_call", "调用工具 generateFollowupOptions 生成二次检索候选问题。");
 
-        if (executionContext.searchInvocationCount() < 1) {
+        AgentExecutionSnapshot snapshot = executionContext.snapshot();
+        if (snapshot.searchInvocationCount() < 1) {
             executionContext.addNote(AgentStage.FOLLOWUP, "tool_error", "尚未发生有效检索，不能生成二次检索候选问题。");
             return FollowupOptionsResult.toolError("SEARCH_REQUIRED", "at least one search is required");
         }
-        if (!executionContext.improvableByFollowup() || executionContext.retrievalGapType() == RetrievalGapType.NOT_IMPROVABLE) {
+        if (!snapshot.improvableByFollowup() || snapshot.retrievalGapType() == RetrievalGapType.NOT_IMPROVABLE) {
             executionContext.addNote(AgentStage.FOLLOWUP, "tool_error", "当前检索缺口不适合通过二次检索改善。");
             return FollowupOptionsResult.toolError("NOT_IMPROVABLE", "retrieval gap is not improvable by followup");
         }
-        if (!executionContext.hasEffectiveRetrievalHistory()) {
+        if (!snapshot.hasEffectiveRetrievalHistory()) {
             executionContext.addNote(AgentStage.FOLLOWUP, "tool_error", "缺少有效检索痕迹，不能生成候选问题。");
             return FollowupOptionsResult.toolError("NO_RETRIEVAL_CONTEXT", "effective retrieval history is required");
         }
-        if (executionContext.toolCalls() >= maxToolCalls) {
+        if (snapshot.toolCalls() >= maxToolCalls) {
             executionContext.addNote(AgentStage.FOLLOWUP, "budget", "已达到工具调用上限，跳过候选问题生成。");
             return FollowupOptionsResult.toolError("TOOL_BUDGET_EXCEEDED", "tool call budget exceeded");
         }
@@ -280,8 +273,10 @@ public class AgentKnowledgeTools {
             executionContext.addNote(AgentStage.FOLLOWUP, "budget", "二次检索候选问题工具已尝试过，跳过本次调用。");
             return FollowupOptionsResult.toolError("FOLLOWUP_ALREADY_ATTEMPTED", "followup options already attempted");
         }
-
-        executionContext.incrementToolCalls();
+        if (!executionContext.tryConsumeToolBudget(maxToolCalls)) {
+            executionContext.addNote(AgentStage.FOLLOWUP, "budget", "已达到工具调用上限，跳过候选问题生成。");
+            return FollowupOptionsResult.toolError("TOOL_BUDGET_EXCEEDED", "tool call budget exceeded");
+        }
 
         try {
             FollowupOptionsResult raw = toolBridge.block(
@@ -294,116 +289,19 @@ public class AgentKnowledgeTools {
                     timeout,
                     "generateFollowupOptions");
 
-            FollowupOptionsResult normalized = normalizeFollowupOptions(raw);
+            FollowupOptionsResult normalized = FollowupOptionsNormalizer.normalize(raw);
             if (!"ok".equals(normalized.status())) {
                 executionContext.addNote(AgentStage.FOLLOWUP, "tool_error", "二次检索候选问题工具返回了无效结果。");
                 return normalized;
             }
 
-            executionContext.storeFollowupOptionsCandidate(normalized);
+            executionContext.recordFollowupCandidate(normalized);
             executionContext.addNote(AgentStage.FOLLOWUP, "tool_result", "已生成 2 个二次检索候选问题。");
             return normalized;
         } catch (Exception error) {
             executionContext.addNote(AgentStage.FOLLOWUP, "tool_error", "二次检索候选问题工具执行失败。");
             return FollowupOptionsResult.toolError("FOLLOWUP_GENERATION_FAILED", sanitizeError(error));
         }
-    }
-
-    private void applyRetrievalAssessment(String query, int resultCount) {
-        if (resultCount <= 0) {
-            executionContext.updateRetrievalAssessment(RetrievalGapType.MISSING_SCOPE, true, List.of("scope", "time"));
-            return;
-        }
-        if (containsProcedureKeyword(query)) {
-            executionContext.updateRetrievalAssessment(
-                    RetrievalGapType.MISSING_PROCEDURE_BRANCH,
-                    true,
-                    List.of("procedure", "scope"));
-            return;
-        }
-        if (!containsExplicitTime(query)) {
-            executionContext.updateRetrievalAssessment(RetrievalGapType.MISSING_TIME, true, List.of("time", "scope"));
-            return;
-        }
-        if (resultCount <= 2) {
-            executionContext.updateRetrievalAssessment(RetrievalGapType.AMBIGUOUS_SUBJECT, true, List.of("subject", "scope"));
-            return;
-        }
-        executionContext.updateRetrievalAssessment(RetrievalGapType.MISSING_SCOPE, true, List.of("scope", "procedure"));
-    }
-
-    private boolean containsProcedureKeyword(String query) {
-        String normalized = query == null ? "" : query.toLowerCase(Locale.ROOT);
-        return PROCEDURE_KEYWORDS.stream().anyMatch(normalized::contains);
-    }
-
-    private boolean containsExplicitTime(String query) {
-        return query != null && TIME_PATTERN.matcher(query).find();
-    }
-
-    private FollowupOptionsResult normalizeFollowupOptions(FollowupOptionsResult raw) {
-        if (raw == null || !"ok".equals(raw.status())) {
-            return FollowupOptionsResult.toolError("INVALID_FOLLOWUP_OPTIONS", "followup options response is invalid");
-        }
-
-        List<String> normalizedOptions = normalizeQuestions(raw.options());
-        List<String> normalizedFocusTypes = normalizeFocusTypes(raw.focusTypes());
-        if (normalizedOptions.size() != 2 || normalizedFocusTypes.size() != 2) {
-            return FollowupOptionsResult.toolError("INVALID_FOLLOWUP_OPTIONS", "followup options must contain exactly 2 items");
-        }
-        if (normalizedFocusTypes.get(0).equals(normalizedFocusTypes.get(1))) {
-            return FollowupOptionsResult.toolError("INVALID_FOCUS_TYPES", "followup focus types must cover two different dimensions");
-        }
-        return FollowupOptionsResult.ok(normalizedOptions, normalizedFocusTypes, sanitizeRationale(raw.rationale()));
-    }
-
-    private List<String> normalizeQuestions(List<String> options) {
-        if (options == null) {
-            return List.of();
-        }
-        List<String> normalized = new ArrayList<>();
-        Set<String> unique = new LinkedHashSet<>();
-        for (String option : options) {
-            if (option == null) {
-                continue;
-            }
-            String trimmed = option.trim();
-            if (trimmed.isBlank()) {
-                continue;
-            }
-            if (trimmed.startsWith("请补充")) {
-                continue;
-            }
-            if (!trimmed.endsWith("？") && !trimmed.endsWith("?")) {
-                trimmed = trimmed + "？";
-            }
-            if (trimmed.length() < 8 || !unique.add(trimmed)) {
-                continue;
-            }
-            normalized.add(trimmed);
-        }
-        return List.copyOf(normalized);
-    }
-
-    private List<String> normalizeFocusTypes(List<String> focusTypes) {
-        if (focusTypes == null) {
-            return List.of();
-        }
-        List<String> normalized = new ArrayList<>();
-        for (String focusType : focusTypes) {
-            if (focusType == null || focusType.isBlank()) {
-                continue;
-            }
-            normalized.add(focusType.trim().toLowerCase(Locale.ROOT));
-        }
-        return List.copyOf(normalized);
-    }
-
-    private String sanitizeRationale(String rationale) {
-        if (rationale == null || rationale.isBlank()) {
-            return null;
-        }
-        return rationale.length() > 300 ? rationale.substring(0, 300) : rationale;
     }
 
     private String buildFollowupToolPrompt() {
@@ -436,28 +334,29 @@ public class AgentKnowledgeTools {
     }
 
     private java.util.Map<String, Object> buildFollowupToolPromptParams() {
+        AgentExecutionSnapshot snapshot = executionContext.snapshot();
         return java.util.Map.of(
-                "retrievalGapType", executionContext.retrievalGapType().name(),
-                "allowedFocusTypes", executionContext.allowedFocusTypes().isEmpty()
+                "retrievalGapType", snapshot.retrievalGapType().name(),
+                "allowedFocusTypes", snapshot.allowedFocusTypes().isEmpty()
                         ? "无"
-                        : String.join(", ", executionContext.allowedFocusTypes()),
-                "selectedTags", executionContext.selectedTags().isEmpty()
+                        : String.join(", ", snapshot.allowedFocusTypes()),
+                "selectedTags", snapshot.selectedTags().isEmpty()
                         ? "无"
-                        : String.join(", ", executionContext.selectedTags()),
-                "selectedSpaceCodes", executionContext.selectedSpaceCodes().isEmpty()
+                        : String.join(", ", snapshot.selectedTags()),
+                "selectedSpaceCodes", snapshot.selectedSpaceCodes().isEmpty()
                         ? "无"
-                        : String.join(", ", executionContext.selectedSpaceCodes()),
-                "retrievalHistory", summarizeRetrievalHistory(),
-                "retrievedEvidence", summarizeRetrievedEvidence());
+                        : String.join(", ", snapshot.selectedSpaceCodes()),
+                "retrievalHistory", summarizeRetrievalHistory(snapshot),
+                "retrievedEvidence", summarizeRetrievedEvidence(snapshot));
     }
 
-    private String summarizeRetrievalHistory() {
-        if (executionContext.retrievalHistory().isEmpty()) {
+    private String summarizeRetrievalHistory(AgentExecutionSnapshot snapshot) {
+        if (snapshot.retrievalHistory().isEmpty()) {
             return "无";
         }
         StringBuilder builder = new StringBuilder();
         int index = 1;
-        for (RetrievalHistoryEntry entry : executionContext.retrievalHistory()) {
+        for (RetrievalHistoryEntry entry : snapshot.retrievalHistory()) {
             builder.append(index++)
                     .append(". query=")
                     .append(entry.query())
@@ -472,13 +371,13 @@ public class AgentKnowledgeTools {
         return builder.toString().trim();
     }
 
-    private String summarizeRetrievedEvidence() {
-        if (executionContext.retrievedParentContexts().isEmpty()) {
+    private String summarizeRetrievedEvidence(AgentExecutionSnapshot snapshot) {
+        if (snapshot.retrievedParentContexts().isEmpty()) {
             return "无";
         }
         StringBuilder builder = new StringBuilder();
         int index = 1;
-        for (ParentContextBlock context : executionContext.retrievedParentContexts()) {
+        for (ParentContextBlock context : snapshot.retrievedParentContexts()) {
             builder.append(index++)
                     .append(". parentBlockId=")
                     .append(context.parentBlockId())
@@ -491,35 +390,6 @@ public class AgentKnowledgeTools {
                     .append(System.lineSeparator());
         }
         return builder.toString().trim();
-    }
-
-    private List<ParentContextBlock> filterParentContexts(List<ParentContextBlock> contexts,
-                                                          Set<String> availableEvidenceIds) {
-        if (contexts == null || contexts.isEmpty() || availableEvidenceIds == null || availableEvidenceIds.isEmpty()) {
-            return List.of();
-        }
-        List<ParentContextBlock> filtered = new ArrayList<>();
-        for (ParentContextBlock context : contexts) {
-            List<String> citableEvidenceIds = context.evidenceIds() == null
-                    ? List.of()
-                    : context.evidenceIds().stream()
-                    .filter(availableEvidenceIds::contains)
-                    .toList();
-            if (citableEvidenceIds.isEmpty()) {
-                continue;
-            }
-            filtered.add(new ParentContextBlock(
-                    context.parentBlockId(),
-                    context.docUuid(),
-                    context.fileName(),
-                    context.content(),
-                    context.parentIndex(),
-                    context.pageStart(),
-                    context.pageEnd(),
-                    citableEvidenceIds,
-                    context.rank()));
-        }
-        return List.copyOf(filtered);
     }
 
     private Map<String, Object> parentMetadata(ParentContextBlock context) {

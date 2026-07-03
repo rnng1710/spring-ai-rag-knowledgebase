@@ -4,8 +4,10 @@ import net.topikachu.rag.service.chat.ParentContextBlock;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class AgentExecutionContextTest {
 
@@ -22,17 +24,17 @@ class AgentExecutionContextTest {
     }
 
     @Test
-    void selectParentContextsForEvidenceFiltersCitableEvidenceIds() {
+    void snapshotIsImmutableCopy() {
         AgentExecutionContext context = new AgentExecutionContext("req-1", "conv-1", "msg-1", "问题", List.of());
-        context.addRetrievedParentContexts(List.of(
-                parent("parent-1", List.of("ev-1", "ev-2")),
-                parent("parent-2", List.of("ev-3"))));
+        context.addNote(AgentStage.PLANNING, "decision", "规划");
+        context.addRetrievedEvidence(List.of(new EvidenceSnapshot("ev-1", "text", Map.of())), 12);
 
-        List<ParentContextBlock> selected = context.selectParentContextsForEvidence(List.of("ev-2"));
+        AgentExecutionSnapshot snapshot = context.snapshot();
 
-        assertEquals(1, selected.size());
-        assertEquals("parent-1", selected.get(0).parentBlockId());
-        assertEquals(List.of("ev-2"), selected.get(0).evidenceIds());
+        assertThrows(UnsupportedOperationException.class,
+                () -> snapshot.notes().add(new AgentNote(2, AgentStage.RETRIEVING, "x", "x", 1)));
+        assertThrows(UnsupportedOperationException.class,
+                () -> snapshot.retrievedEvidence().add(new EvidenceSnapshot("ev-2", "text", Map.of())));
     }
 
     private ParentContextBlock parent(String parentBlockId, List<String> evidenceIds) {
