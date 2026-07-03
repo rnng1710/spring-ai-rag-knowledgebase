@@ -3,6 +3,7 @@ package net.topikachu.rag.service.chat;
 import lombok.extern.slf4j.Slf4j;
 import net.topikachu.rag.auth.CurrentUserContext;
 import net.topikachu.rag.auth.SearchScope;
+import net.topikachu.rag.chat.history.ChatHistoryService;
 import net.topikachu.rag.evaluation.ContextNode;
 import net.topikachu.rag.evaluation.EvaluationConfig;
 import net.topikachu.rag.evaluation.EvaluationResultItem;
@@ -40,6 +41,7 @@ public class ChatService {
     private final MessageChatMemoryAdvisor messageChatMemoryAdvisor;
     private final EvaluationPersistenceService persistenceService;
     private final UsedSourceValidator usedSourceValidator;
+    private final ChatHistoryService chatHistoryService;
 
     @Value("${rag.retrieval.hybrid-topk:20}")
     private int hybridTopK;
@@ -57,7 +59,8 @@ public class ChatService {
             ReactiveChatGateway reactiveChatGateway,
             TracingSupport tracingSupport,
             EvaluationPersistenceService persistenceService,
-            UsedSourceValidator usedSourceValidator) {
+            UsedSourceValidator usedSourceValidator,
+            ChatHistoryService chatHistoryService) {
         this.chatMemory = chatMemory;
         this.retrievalPipeline = retrievalPipeline;
         this.contextFormatter = contextFormatter;
@@ -66,6 +69,7 @@ public class ChatService {
         this.tracingSupport = tracingSupport;
         this.persistenceService = persistenceService;
         this.usedSourceValidator = usedSourceValidator;
+        this.chatHistoryService = chatHistoryService;
 
         this.messageChatMemoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory).build();
     }
@@ -123,6 +127,10 @@ public class ChatService {
                                                 msgId, conversationId, currentUserContext.userId(),
                                                 userInput, answer, modelId, "rag",
                                                 toContextNodes(retrievalResult.childCandidates()), usedSources, traceId)
+                                                .subscribe();
+                                        chatHistoryService.saveTurn(
+                                                conversationId, currentUserContext.userId(),
+                                                userInput, answer, modelId, "rag", msgId)
                                                 .subscribe();
                                         return new ChatStreamResponse(Flux.just(answer), usedSources);
                                     });

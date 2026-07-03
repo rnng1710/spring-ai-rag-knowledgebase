@@ -12,9 +12,48 @@
       </el-button>
       
       <div class="chat-history">
-<!--        <div class="chat-history-title">Recent</div>-->
-<!--        <div class="chat-history-item" @click="reset">New Conversation</div>-->
-        <!-- Placeholder history items -->
+        <el-input
+          v-model="historyKeyword"
+          class="history-search"
+          :placeholder="t('chat.historySearch')"
+          clearable
+          size="small"
+          @keyup.enter="loadHistory"
+          @clear="loadHistory"
+        >
+          <template #prefix><el-icon><Search /></el-icon></template>
+        </el-input>
+        <div v-if="historyLoading" class="chat-history-empty">{{ t("chat.thinking") }}</div>
+        <div v-else-if="chatSessions.length === 0" class="chat-history-empty">{{ t("chat.historyEmpty") }}</div>
+        <template v-else>
+          <div
+            v-for="session in chatSessions"
+            :key="session.conversationId"
+            :class="['chat-history-item', { active: session.conversationId === conversationId }]"
+            @click="restoreSession(session.conversationId)"
+          >
+            <div class="history-item-main">
+              <span class="history-title">{{ session.title }}</span>
+              <span class="history-time">{{ formatSessionTime(session.lastMessageAt) }}</span>
+            </div>
+            <div class="history-actions">
+              <el-button
+                text
+                circle
+                size="small"
+                :icon="EditPen"
+                @click.stop="renameSessionPrompt(session)"
+              />
+              <el-button
+                text
+                circle
+                size="small"
+                :icon="Delete"
+                @click.stop="deleteSessionPrompt(session)"
+              />
+            </div>
+          </div>
+        </template>
       </div>
       
       <div style="margin-top:auto">
@@ -207,8 +246,15 @@ import { streamSsePost } from "../api/sse";
 import { listAccessibleSpaces, openDocPreview } from "../api/docs";
 import { getMyPreferences, updateMyPreferences } from "../api/user";
 import { submitFeedback } from "../api/evaluation";
-import { ElMessage } from "element-plus";
-import { Plus, SwitchButton, Position, Close, Collection } from "@element-plus/icons-vue";
+import {
+  deleteChatSession,
+  listChatMessages,
+  listChatSessions,
+  renameChatSession,
+  type ChatSessionItem,
+} from "../api/chatHistory";
+import { ElMessage, ElMessageBox } from "element-plus";
+import { Plus, SwitchButton, Position, Close, Collection, Search, EditPen, Delete } from "@element-plus/icons-vue";
 import { clearAuthSession, getAccessToken, getUsernameFromAccessToken } from "../utils/auth";
 import { useI18n } from "vue-i18n";
 import MarkdownRenderer from "../components/MarkdownRenderer.vue";
@@ -300,6 +346,9 @@ const spaceOptions = ref<string[]>([]);
 const activeMsgId = ref<string | null>(null);
 const activeController = ref<AbortController | null>(null);
 const feedbackPopoverId = ref<string | null>(null);
+const chatSessions = ref<ChatSessionItem[]>([]);
+const historyKeyword = ref("");
+const historyLoading = ref(false);
 
 const FAILURE_MODES = computed(() => [
   { value: "short_text_rerank_bias", label: t("evalModes.shortTextRerankBias") },
@@ -336,6 +385,7 @@ onMounted(async () => {
           selectedSpaces.value = ['public'];
         }
     } catch (e) { console.error(e) }
+    await loadHistory();
 });
 
 const adjustTextareaHeight = (e: Event) => {
@@ -423,6 +473,114 @@ const stageLabel = (stage: AgentStage) => {
     error: t("chat.stageError"),
   };
   return labels[stage];
+};
+
+const loadHistory = async () => {
+  historyLoading.value = true;
+  try {
+    const result = await listChatSessions(historyKeyword.value, 1, 30);
+    chatSessions.value = result.items;
+  } catch (e) {
+    console.error(e);
+    ElMessage.error(t("chat.historyLoadFailed"));
+  } finally {
+    historyLoading.value = false;
+  }
+};
+
+const restoreSession = async (sessionConversationId: string) => {
+  if (loading.value) return;
+  try {
+    const historyMessages = await listChatMessages(sessionConversationId);
+    conversationId.value = sessionConversationId;
+    messages.value = historyMessages.map((item) => {
+      const role = String(item.role || "").toLowerCase() === "user" ? "user" : "assistant";
+      const mode = item.mode === "agent" ? "agent" : "rag";
+      const modelName = item.modelId ? modelNameFor(item.modelId) : undefined;
+      return {
+        id: item.id,
+        role,
+        mode,
+        content: item.content,
+        status: "done",
+        modelName,
+        sources: role === "assistant" ? [] : undefined,
+        followupOptions: [],
+      } satisfies ChatMessage;
+    });
+    const lastAssistant = [...messages.value].reverse().find((msg) => msg.role === "assistant");
+    if (lastAssistant) {
+      selectedMode.value = lastAssistant.mode;
+    }
+    scrollBottom();
+  } catch (e) {
+    console.error(e);
+    ElMessage.error(t("chat.historyRestoreFailed"));
+  }
+};
+
+const renameSessionPrompt = async (session: ChatSessionItem) => {
+  try {
+    const { value } = await ElMessageBox.prompt(
+      t("chat.renameSessionPrompt"),
+      t("chat.renameSession"),
+      {
+        inputValue: session.title,
+        confirmButtonText: t("common.confirm"),
+        cancelButtonText: t("common.cancel"),
+      }
+    );
+    await renameChatSession(session.conversationId, value);
+    ElMessage.success(t("chat.renameSuccess"));
+    await loadHistory();
+  } catch (e: any) {
+    if (e !== "cancel" && e !== "close") {
+      console.error(e);
+      ElMessage.error(t("chat.renameFailed"));
+    }
+  }
+};
+
+const deleteSessionPrompt = async (session: ChatSessionItem) => {
+  try {
+    await ElMessageBox.confirm(
+      t("chat.deleteSessionConfirm", { title: session.title }),
+      t("common.warning"),
+      {
+        confirmButtonText: t("common.delete"),
+        cancelButtonText: t("common.cancel"),
+        type: "warning",
+      }
+    );
+    await deleteChatSession(session.conversationId);
+    if (session.conversationId === conversationId.value) {
+      dispatch({ type: "RESET_CONVERSATION" });
+      conversationId.value = `conv-${Math.random().toString(36).slice(2, 8)}`;
+    }
+    ElMessage.success(t("chat.deleteSessionSuccess"));
+    await loadHistory();
+  } catch (e: any) {
+    if (e !== "cancel" && e !== "close") {
+      console.error(e);
+      ElMessage.error(t("chat.deleteSessionFailed"));
+    }
+  }
+};
+
+const formatSessionTime = (value: string) => {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+};
+
+const modelNameFor = (modelId: string) => {
+  const modelNameMap: Record<string, string> = {
+    ollama: "Qwen 2.5",
+    deepseek: "DeepSeek",
+    gemini: "Gemini",
+  };
+  return modelNameMap[modelId] || modelId;
 };
 
 const dedupeSources = (rawSources: SourceMeta[]) => {
@@ -563,12 +721,7 @@ const submitChat = async (userInput: string, options?: { clearInput?: boolean; f
   }
 
   // 后端 ollama 默认部署 Qwen 2.5 模型，后续换模型时需同步更新此映射
-  const modelNameMap: Record<string, string> = {
-    ollama: 'Qwen 2.5',
-    deepseek: 'DeepSeek',
-    gemini: 'Gemini',
-  };
-  const currentModelName = modelNameMap[selectedModel.value] || selectedModel.value;
+  const currentModelName = modelNameFor(selectedModel.value);
   const msgId = `msg-${Math.random().toString(36).slice(2, 10)}`;
   activeMsgId.value = msgId;
   
@@ -674,6 +827,7 @@ const submitChat = async (userInput: string, options?: { clearInput?: boolean; f
     if (options?.followupMsgId) {
       setFollowupPending(options.followupMsgId, false);
     }
+    loadHistory().catch(console.error);
   }
 };
 
@@ -808,6 +962,15 @@ const logout = () => {
   overflow-y: auto;
   margin-top: 10px;
 }
+.history-search {
+  padding: 0 8px;
+  margin-bottom: 10px;
+}
+.chat-history-empty {
+  padding: 16px 14px;
+  font-size: 13px;
+  color: var(--chat-text-secondary);
+}
 .chat-history-title {
   font-size: 12px;
   font-weight: 500;
@@ -817,15 +980,49 @@ const logout = () => {
 }
 .chat-history-item {
   padding: 10px 16px;
-  border-radius: 18px;
+  border-radius: 8px;
   font-size: 14px;
   color: var(--chat-text-secondary);
   cursor: pointer;
   margin-bottom: 4px;
   transition: background 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
-.chat-history-item:hover {
+.chat-history-item:hover,
+.chat-history-item.active {
   background-color: var(--chat-action-bg);
+}
+.history-item-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.history-title {
+  color: var(--chat-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.history-time {
+  font-size: 11px;
+  color: var(--chat-text-secondary);
+}
+.history-actions {
+  flex: 0 0 auto;
+  display: flex;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.chat-history-item:hover .history-actions,
+.chat-history-item.active .history-actions {
+  opacity: 1;
+}
+.history-actions :deep(.el-button) {
+  color: var(--chat-text-secondary);
 }
 
 /* --- Initial State --- */

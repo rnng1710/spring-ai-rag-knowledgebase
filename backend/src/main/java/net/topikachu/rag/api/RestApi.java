@@ -61,7 +61,9 @@ public class RestApi {
 			Mono<Principal> principalMono) {
 		return principalMono.flatMapMany(principal -> {
 			CurrentUserContext currentUserContext = currentUserContextService.resolveByUsername(principal.getName());
-			var conversationKey = String.format("%s:%s", principal.getName(), conversationId);
+			var conversationKey = conversationId.startsWith(principal.getName() + ":")
+					? conversationId
+					: String.format("%s:%s", principal.getName(), conversationId);
 			SearchScope requestedScope = new SearchScope(chatRequest.spaceCodes(), chatRequest.tags());
 
 			String requestedMode = chatRequest.mode();
@@ -142,6 +144,9 @@ public class RestApi {
 								.event("message")
 								.data((Object) message)
 								.build();
+						if (exp instanceof SourceValidationException) {
+							return Flux.just(fallbackEvent, doneEvent(msgId));
+						}
 						return Flux.just(errorEvent(msgId, message), fallbackEvent, doneEvent(msgId));
 					});
 					})

@@ -666,7 +666,7 @@ const snippetScoreColor = (score: number) => {
 };
 
 const langfuseTraceUrl = (traceId: string) =>
-  `http://192.168.193.128:3000/trace/${traceId}`;
+  `http://localhost:3001/trace/${traceId}`;
 
 const goToChat = () => {
   router.push("/user/chat");

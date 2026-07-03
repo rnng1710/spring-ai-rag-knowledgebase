@@ -4,6 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import net.topikachu.rag.auth.CurrentUserContext;
 import net.topikachu.rag.auth.SearchScope;
 import net.topikachu.rag.ai.memory.BlockingChatMemoryService;
+import net.topikachu.rag.chat.history.ChatHistoryService;
 import net.topikachu.rag.evaluation.ContextNode;
 import net.topikachu.rag.evaluation.service.EvaluationPersistenceService;
 import net.topikachu.rag.observability.TracingSupport;
@@ -40,6 +41,7 @@ public class AgentChatService {
     private final TracingSupport tracingSupport;
     private final ContextFormatter contextFormatter;
     private final UsedSourceValidator usedSourceValidator;
+    private final ChatHistoryService chatHistoryService;
 
     public AgentChatService(AgentExecutor executor,
                             ChatModelStrategyFactory strategyFactory,
@@ -50,7 +52,8 @@ public class AgentChatService {
                             EvaluationPersistenceService persistenceService,
                             TracingSupport tracingSupport,
                             ContextFormatter contextFormatter,
-                            UsedSourceValidator usedSourceValidator) {
+                            UsedSourceValidator usedSourceValidator,
+                            ChatHistoryService chatHistoryService) {
         this.executor = executor;
         this.strategyFactory = strategyFactory;
         this.blockingChatMemoryService = blockingChatMemoryService;
@@ -61,6 +64,7 @@ public class AgentChatService {
         this.tracingSupport = tracingSupport;
         this.contextFormatter = contextFormatter;
         this.usedSourceValidator = usedSourceValidator;
+        this.chatHistoryService = chatHistoryService;
     }
 
     public Flux<ServerSentEvent<Object>> streamEvents(String userInput,
@@ -94,6 +98,9 @@ public class AgentChatService {
                                     Mono<ServerSentEvent<Object>> completion = blockingChatMemoryService.add(conversationId, List.of(
                                                     new UserMessage(userInput),
                                                     new AssistantMessage(result.followupPrompt())))
+                                            .then(chatHistoryService.saveTurn(
+                                                    conversationId, currentUserContext.userId(),
+                                                    userInput, result.followupPrompt(), modelId, "agent", msgId))
                                             .doOnSuccess(ignored -> agentTurnStateStore.complete(msgId))
                                             .thenReturn(buildEvent("done", Map.of("msgId", msgId)));
 
@@ -141,6 +148,9 @@ public class AgentChatService {
                                     return blockingChatMemoryService.add(conversationId, List.of(
                                                     new UserMessage(userInput),
                                                     new AssistantMessage(finalAnswer)))
+                                            .then(chatHistoryService.saveTurn(
+                                                    conversationId, currentUserContext.userId(),
+                                                    userInput, finalAnswer, modelId, "agent", msgId))
                                             .doOnSuccess(ignored -> agentTurnStateStore.complete(msgId))
                                             .thenReturn(buildEvent("done", Map.of("msgId", msgId)));
                                 });
