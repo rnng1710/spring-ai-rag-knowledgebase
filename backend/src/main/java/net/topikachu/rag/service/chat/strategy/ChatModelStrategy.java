@@ -1,6 +1,13 @@
 package net.topikachu.rag.service.chat.strategy;
 
+import net.topikachu.rag.service.chat.ReactiveChatGateway;
+import net.topikachu.rag.service.chat.SourcedAnswerPrompts;
+import net.topikachu.rag.service.chat.SourcedAnswerResult;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
+import reactor.core.publisher.Mono;
+
+import java.util.Map;
 
 public interface ChatModelStrategy {
     /**
@@ -13,8 +20,21 @@ public interface ChatModelStrategy {
      */
     ChatClient getChatClient();
 
-    /**
-     * 获取针对当前模型优化过的 System Prompt 模板
-     */
-    String getSystemPromptTemplate();
+    default Mono<SourcedAnswerResult> callSourcedAnswer(ReactiveChatGateway reactiveChatGateway,
+                                                        String context,
+                                                        String userInput,
+                                                        String conversationId,
+                                                        MessageChatMemoryAdvisor chatMemoryAdvisor) {
+        return reactiveChatGateway.callStructured(
+                getChatClient(),
+                SourcedAnswerPrompts.jsonPrompt(),
+                Map.of("context", context),
+                userInput,
+                conversationId,
+                chatMemoryAdvisor,
+                SourcedAnswerResult.class);
+    }
+
+    default void saveSourcedAnswerMemory(String conversationId, String userInput, String answer) {
+    }
 }

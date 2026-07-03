@@ -3,7 +3,6 @@ package net.topikachu.rag.agent;
 import lombok.extern.slf4j.Slf4j;
 import net.topikachu.rag.auth.CurrentUserContext;
 import net.topikachu.rag.auth.SearchScope;
-import net.topikachu.rag.ai.memory.BlockingChatMemoryService;
 import net.topikachu.rag.chat.history.ChatHistoryService;
 import net.topikachu.rag.evaluation.ContextNode;
 import net.topikachu.rag.evaluation.service.EvaluationPersistenceService;
@@ -14,7 +13,9 @@ import net.topikachu.rag.service.chat.UsedSource;
 import net.topikachu.rag.service.chat.UsedSourceValidator;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategy;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategyFactory;
+import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
@@ -33,7 +34,7 @@ public class AgentChatService {
 
     private final AgentExecutor executor;
     private final ChatModelStrategyFactory strategyFactory;
-    private final BlockingChatMemoryService blockingChatMemoryService;
+    private final ChatMemory chatMemory;
     private final ReactiveChatGateway reactiveChatGateway;
     private final ConversationExecutionGuard conversationExecutionGuard;
     private final AgentTurnStateStore agentTurnStateStore;
@@ -45,7 +46,7 @@ public class AgentChatService {
 
     public AgentChatService(AgentExecutor executor,
                             ChatModelStrategyFactory strategyFactory,
-                            BlockingChatMemoryService blockingChatMemoryService,
+                            ChatMemory chatMemory,
                             ReactiveChatGateway reactiveChatGateway,
                             ConversationExecutionGuard conversationExecutionGuard,
                             AgentTurnStateStore agentTurnStateStore,
@@ -56,7 +57,7 @@ public class AgentChatService {
                             ChatHistoryService chatHistoryService) {
         this.executor = executor;
         this.strategyFactory = strategyFactory;
-        this.blockingChatMemoryService = blockingChatMemoryService;
+        this.chatMemory = chatMemory;
         this.reactiveChatGateway = reactiveChatGateway;
         this.conversationExecutionGuard = conversationExecutionGuard;
         this.agentTurnStateStore = agentTurnStateStore;
@@ -95,7 +96,7 @@ public class AgentChatService {
                                                     "msgId", msgId,
                                                     "text", result.followupPrompt(),
                                                     "options", result.followupOptions()));
-                                    Mono<ServerSentEvent<Object>> completion = blockingChatMemoryService.add(conversationId, List.of(
+                                    Mono<ServerSentEvent<Object>> completion = addChatMemory(conversationId, List.of(
                                                     new UserMessage(userInput),
                                                     new AssistantMessage(result.followupPrompt())))
                                             .then(chatHistoryService.saveTurn(
@@ -145,7 +146,7 @@ public class AgentChatService {
                                             userInput, finalAnswer, modelId, "agent",
                                             toContextNodes(sources), usedSources, traceId)
                                             .subscribe();
-                                    return blockingChatMemoryService.add(conversationId, List.of(
+                                    return addChatMemory(conversationId, List.of(
                                                     new UserMessage(userInput),
                                                     new AssistantMessage(finalAnswer)))
                                             .then(chatHistoryService.saveTurn(
@@ -190,6 +191,12 @@ public class AgentChatService {
                         "draft", buildDraftSection(result.draft()),
                         "revisionInstruction", buildRevisionInstruction(result.finalInstruction())),
                 userInput);
+    }
+
+    private Mono<Void> addChatMemory(String conversationId, List<Message> messages) {
+        return Mono.fromRunnable(() -> chatMemory.add(conversationId, messages))
+                .subscribeOn(Schedulers.boundedElastic())
+                .then();
     }
 
     private Flux<ServerSentEvent<Object>> buildTraceEvents(List<AgentNote> notes, String msgId) {

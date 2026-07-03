@@ -10,7 +10,7 @@ class ChatServicePromptTest {
 
     @Test
     void sourcedAnswerPromptUsesDedicatedJsonContract() {
-        String prompt = ChatService.buildSourcedAnswerPrompt();
+        String prompt = SourcedAnswerPrompts.jsonPrompt();
 
         assertTrue(prompt.contains("JSON 字段固定为 answer、answerType、usedSources"));
         assertTrue(prompt.contains("usedSources 必须是字符串数组"));

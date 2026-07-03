@@ -1,6 +1,5 @@
 package net.topikachu.rag.agent;
 
-import net.topikachu.rag.ai.memory.BlockingChatMemoryService;
 import net.topikachu.rag.chat.history.ChatHistoryService;
 import net.topikachu.rag.evaluation.service.EvaluationPersistenceService;
 import net.topikachu.rag.observability.TracingSupport;
@@ -10,6 +9,7 @@ import net.topikachu.rag.service.chat.ReactiveChatGateway;
 import net.topikachu.rag.service.chat.UsedSourceValidator;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategy;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategyFactory;
+import org.springframework.ai.chat.memory.ChatMemory;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -36,7 +36,7 @@ class AgentChatServiceParentContextTest {
     private ChatModelStrategyFactory strategyFactory;
 
     @Mock
-    private BlockingChatMemoryService blockingChatMemoryService;
+    private ChatMemory chatMemory;
 
     @Mock
     private ReactiveChatGateway reactiveChatGateway;
@@ -69,7 +69,7 @@ class AgentChatServiceParentContextTest {
         AgentChatService service = new AgentChatService(
                 executor,
                 strategyFactory,
-                blockingChatMemoryService,
+                chatMemory,
                 reactiveChatGateway,
                 conversationExecutionGuard,
                 agentTurnStateStore,
