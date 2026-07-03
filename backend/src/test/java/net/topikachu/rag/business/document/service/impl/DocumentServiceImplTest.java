@@ -5,6 +5,7 @@ import net.topikachu.rag.business.document.entity.DocumentStatus;
 import net.topikachu.rag.business.document.mapper.DocumentMapper;
 import net.topikachu.rag.business.document.mapper.KnowledgeAclRefreshTaskMapper;
 import net.topikachu.rag.business.document.service.EtlJobService;
+import net.topikachu.rag.business.document.vo.DocumentPermissionUpdateRequest;
 import net.topikachu.rag.business.document.vo.UploadResult;
 import net.topikachu.rag.observability.TracingSupport;
 import net.topikachu.rag.service.etl.DocumentChunkMetadataBuilder;
@@ -18,8 +19,9 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.multipart.FilePart;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.transaction.support.SimpleTransactionStatus;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
@@ -41,6 +43,8 @@ class DocumentServiceImplTest {
     private EtlJobService etlJobService;
     private KnowledgeParentBlockService parentBlockService;
     private PlatformTransactionManager transactionManager;
+    private DocumentUploadHandler uploadHandler;
+    private AclRefreshManager aclRefreshManager;
     private DocumentServiceImpl service;
 
     @BeforeEach
@@ -51,32 +55,42 @@ class DocumentServiceImplTest {
         etlJobService = mock(EtlJobService.class);
         parentBlockService = mock(KnowledgeParentBlockService.class);
         transactionManager = mock(PlatformTransactionManager.class);
-
-        service = new DocumentServiceImpl(
+        aclRefreshManager = mock(AclRefreshManager.class);
+        uploadHandler = new DocumentUploadHandler(
                 documentMapper,
                 tracingSupport,
-                mock(MilvusWriteGateway.class),
-                mock(DocumentChunkMetadataBuilder.class),
-                mock(KnowledgeAclRefreshTaskMapper.class),
                 etlJobService,
-                parentBlockService,
                 transactionManager,
                 objectStorageService);
 
+        service = new DocumentServiceImpl(
+                documentMapper,
+                mock(MilvusWriteGateway.class),
+                mock(KnowledgeAclRefreshTaskMapper.class),
+                etlJobService,
+                parentBlockService,
+                objectStorageService,
+                uploadHandler,
+                new DocumentPermissionManager(),
+                aclRefreshManager);
+
         ReflectionTestUtils.setField(service, "inputDirectory", tempDir.toString());
-        ReflectionTestUtils.setField(service, "allowedExt", "pdf,doc,docx,txt,md");
-        ReflectionTestUtils.setField(service, "maxSizeBytes", 52428800L);
-        ReflectionTestUtils.setField(service, "aclRefreshMaxRetries", 5);
-        ReflectionTestUtils.setField(service, "aclRefreshBatchSize", 20);
+        ReflectionTestUtils.setField(uploadHandler, "inputDirectory", tempDir.toString());
+        ReflectionTestUtils.setField(uploadHandler, "allowedExt", "pdf,doc,docx,txt,md");
+        ReflectionTestUtils.setField(uploadHandler, "maxSizeBytes", 52428800L);
 
         doAnswer(inv -> inv.getArgument(2)).when(tracingSupport)
                 .traceMono(anyString(), anyMap(), any());
+        when(transactionManager.getTransaction(any(TransactionDefinition.class)))
+                .thenReturn(new SimpleTransactionStatus());
         when(objectStorageService.putObject(anyString(), any(Path.class), anyString()))
                 .thenReturn(Mono.empty());
         when(objectStorageService.deleteObject(anyString()))
                 .thenReturn(Mono.empty());
         when(objectStorageService.exists(anyString()))
                 .thenReturn(Mono.just(true));
+        when(etlJobService.retryDocumentIngestion(any(Document.class), anyString(), anyString()))
+                .thenReturn(Mono.empty());
         when(parentBlockService.deleteByDocUuid(anyString()))
                 .thenReturn(Mono.empty());
         Path stubFile = tempDir.resolve("stub.txt");
@@ -97,6 +111,43 @@ class DocumentServiceImplTest {
             return Mono.empty();
         });
         return filePart;
+    }
+
+    @Test
+    void updatePermissionsUpdatesDocumentAndQueuesAclRefresh() {
+        Document doc = new Document();
+        doc.setId("doc-id");
+        doc.setDocUuid("doc-uuid");
+        doc.setAclVersion(1);
+        when(documentMapper.selectById("doc-id")).thenReturn(doc);
+        when(aclRefreshManager.processSingle("doc-uuid", 2)).thenReturn(false);
+        DocumentPermissionUpdateRequest request = new DocumentPermissionUpdateRequest();
+        request.setSpaceCode("space-a");
+        request.setAllowedRoles(List.of("USER"));
+        request.setIsPublic(false);
+
+        service.updatePermissions("doc-id", request).block();
+
+        assert doc.getAclVersion() == 2;
+        assert "space-a".equals(doc.getSpaceCode());
+        verify(documentMapper).updateById(doc);
+        verify(aclRefreshManager).enqueue(doc);
+        verify(aclRefreshManager).processSingle("doc-uuid", 2);
+    }
+
+    @Test
+    void retryIngestionDelegatesToEtlJobService() {
+        Document doc = new Document();
+        doc.setId("doc-id");
+        doc.setDocUuid("doc-uuid");
+        doc.setStatus(DocumentStatus.FAILED.name());
+        doc.setObjectKey("documents/doc-uuid/test.pdf");
+        doc.setRetryCount(0);
+        when(documentMapper.selectById("doc-id")).thenReturn(doc);
+
+        service.retryIngestion("doc-id", "user1").block();
+
+        verify(etlJobService).retryDocumentIngestion(doc, "documents/doc-uuid/test.pdf", "user1");
     }
 
     @Test
@@ -195,7 +246,7 @@ class DocumentServiceImplTest {
 
     @Test
     void uploadRejectsOversizedFile() throws Exception {
-        ReflectionTestUtils.setField(service, "maxSizeBytes", 10L);
+        ReflectionTestUtils.setField(uploadHandler, "maxSizeBytes", 10L);
 
         Path sourceFile = tempDir.resolve("large.pdf");
         Files.write(sourceFile, "this file is way too large for the tiny limit".getBytes());
@@ -304,13 +355,16 @@ class DocumentServiceImplTest {
                 .thenReturn(Mono.error(new RuntimeException("storage down")));
         when(failOss.deleteObject(anyString())).thenReturn(Mono.empty());
 
+        DocumentUploadHandler failUploadHandler = new DocumentUploadHandler(
+                documentMapper, tracingSupport, failEtlJobService, transactionManager, failOss);
         DocumentServiceImpl failService = new DocumentServiceImpl(
-                documentMapper, tracingSupport, mock(MilvusWriteGateway.class),
-                mock(DocumentChunkMetadataBuilder.class), mock(KnowledgeAclRefreshTaskMapper.class),
-                failEtlJobService, parentBlockService, transactionManager, failOss);
+                documentMapper, mock(MilvusWriteGateway.class), mock(KnowledgeAclRefreshTaskMapper.class),
+                failEtlJobService, parentBlockService, failOss,
+                failUploadHandler, new DocumentPermissionManager(), mock(AclRefreshManager.class));
         ReflectionTestUtils.setField(failService, "inputDirectory", tempDir.toString());
-        ReflectionTestUtils.setField(failService, "allowedExt", "pdf,doc,docx,txt,md");
-        ReflectionTestUtils.setField(failService, "maxSizeBytes", 52428800L);
+        ReflectionTestUtils.setField(failUploadHandler, "inputDirectory", tempDir.toString());
+        ReflectionTestUtils.setField(failUploadHandler, "allowedExt", "pdf,doc,docx,txt,md");
+        ReflectionTestUtils.setField(failUploadHandler, "maxSizeBytes", 52428800L);
 
         Path sourceFile = tempDir.resolve("put-fail.pdf");
         Files.write(sourceFile, "put fails content".getBytes());
