@@ -8,15 +8,20 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.ai.openai.api.ResponseFormat;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -25,6 +30,8 @@ import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 @Slf4j
 @Component
 public class ReactiveChatGateway {
+
+    static final String SUBMIT_SOURCED_ANSWER_TOOL = "submitSourcedAnswer";
 
     private final TracingSupport tracingSupport;
     private final ObjectMapper objectMapper;
@@ -88,6 +95,29 @@ public class ReactiveChatGateway {
                                 .content())
                         .doOnNext(raw -> logRawStructuredResponse(conversationId, responseType, raw))
                         .map(raw -> decodeStructuredResponse(raw, responseType, objectMapper))
+                        .subscribeOn(Schedulers.boundedElastic()));
+    }
+
+    public Mono<SourcedAnswerResult> callSourcedAnswerTool(OpenAiApi openAiApi,
+                                                           String model,
+                                                           String systemText,
+                                                           Map<String, Object> systemParams,
+                                                           List<Message> historyMessages,
+                                                           String userText) {
+        return tracingSupport.traceMono("llm.sourced_answer_tool",
+                Map.of(
+                        "llm.model", model == null ? "" : model,
+                        "llm.prompt_chars", systemText == null ? 0 : systemText.length(),
+                        "llm.user_chars", userText == null ? 0 : userText.length()),
+                Mono.fromCallable(() -> {
+                            OpenAiApi.ChatCompletionRequest request = new OpenAiApi.ChatCompletionRequest(
+                                    sourcedAnswerMessages(systemText, systemParams, historyMessages, userText),
+                                    model,
+                                    List.of(sourcedAnswerTool()),
+                                    OpenAiApi.ChatCompletionRequest.ToolChoiceBuilder.function(SUBMIT_SOURCED_ANSWER_TOOL));
+                            ResponseEntity<OpenAiApi.ChatCompletion> response = openAiApi.chatCompletionEntity(request);
+                            return decodeSourcedAnswerToolCall(response.getBody(), objectMapper);
+                        })
                         .subscribeOn(Schedulers.boundedElastic()));
     }
 
@@ -189,6 +219,106 @@ public class ReactiveChatGateway {
                 systemParams.forEach(spec::param);
             }
         });
+    }
+
+    private List<OpenAiApi.ChatCompletionMessage> sourcedAnswerMessages(String systemText,
+                                                                        Map<String, Object> systemParams,
+                                                                        List<Message> historyMessages,
+                                                                        String userText) {
+        List<OpenAiApi.ChatCompletionMessage> messages = new ArrayList<>();
+        messages.add(new OpenAiApi.ChatCompletionMessage(
+                renderSystemText(systemText, systemParams),
+                OpenAiApi.ChatCompletionMessage.Role.SYSTEM));
+        if (historyMessages != null) {
+            for (Message historyMessage : historyMessages) {
+                OpenAiApi.ChatCompletionMessage.Role role = toOpenAiRole(historyMessage);
+                if (role != null && historyMessage.getText() != null && !historyMessage.getText().isBlank()) {
+                    messages.add(new OpenAiApi.ChatCompletionMessage(historyMessage.getText(), role));
+                }
+            }
+        }
+        messages.add(new OpenAiApi.ChatCompletionMessage(userText, OpenAiApi.ChatCompletionMessage.Role.USER));
+        return messages;
+    }
+
+    private OpenAiApi.ChatCompletionMessage.Role toOpenAiRole(Message message) {
+        if (message == null) {
+            return null;
+        }
+        MessageType messageType = message.getMessageType();
+        if (MessageType.USER.equals(messageType)) {
+            return OpenAiApi.ChatCompletionMessage.Role.USER;
+        }
+        if (MessageType.ASSISTANT.equals(messageType)) {
+            return OpenAiApi.ChatCompletionMessage.Role.ASSISTANT;
+        }
+        return null;
+    }
+
+    private String renderSystemText(String systemText, Map<String, Object> systemParams) {
+        String rendered = systemText == null ? "" : systemText;
+        if (systemParams == null || systemParams.isEmpty()) {
+            return rendered;
+        }
+        for (Map.Entry<String, Object> entry : systemParams.entrySet()) {
+            rendered = rendered.replace("{" + entry.getKey() + "}", String.valueOf(entry.getValue()));
+        }
+        return rendered;
+    }
+
+    static OpenAiApi.FunctionTool sourcedAnswerTool() {
+        return new OpenAiApi.FunctionTool(new OpenAiApi.FunctionTool.Function(
+                "Submit the final grounded answer and the evidence ids actually used.",
+                SUBMIT_SOURCED_ANSWER_TOOL,
+                sourcedAnswerSchema(),
+                true));
+    }
+
+    private static Map<String, Object> sourcedAnswerSchema() {
+        Map<String, Object> answer = Map.of(
+                "type", "string",
+                "description", "Final user-facing answer. Include source citations in the text for factual answers.");
+        Map<String, Object> answerType = Map.of(
+                "type", "string",
+                "enum", List.of("factual", "refusal"));
+        Map<String, Object> usedSources = Map.of(
+                "type", "array",
+                "description", "Evidence ids actually used. Empty only when answerType is refusal.",
+                "items", Map.of("type", "string"));
+        Map<String, Object> properties = new LinkedHashMap<>();
+        properties.put("answer", answer);
+        properties.put("answerType", answerType);
+        properties.put("usedSources", usedSources);
+        return Map.of(
+                "type", "object",
+                "properties", properties,
+                "required", List.of("answer", "answerType", "usedSources"),
+                "additionalProperties", false);
+    }
+
+    static SourcedAnswerResult decodeSourcedAnswerToolCall(OpenAiApi.ChatCompletion completion,
+                                                           ObjectMapper objectMapper) {
+        if (completion == null || completion.choices() == null || completion.choices().isEmpty()) {
+            throw new IllegalArgumentException("Missing structured sourced answer tool call.");
+        }
+        OpenAiApi.ChatCompletionMessage message = completion.choices().get(0).message();
+        if (message == null || message.toolCalls() == null || message.toolCalls().isEmpty()) {
+            throw new IllegalArgumentException("Missing structured sourced answer tool call.");
+        }
+        OpenAiApi.ChatCompletionMessage.ToolCall toolCall = message.toolCalls().get(0);
+        OpenAiApi.ChatCompletionMessage.ChatCompletionFunction function = toolCall.function();
+        log.info("[LLM-RAW-SOURCED-ANSWER-TOOL] name={}, arguments={}",
+                function == null ? "" : function.name(),
+                function == null ? "" : function.arguments());
+        if (function == null || !SUBMIT_SOURCED_ANSWER_TOOL.equals(function.name())) {
+            throw new IllegalArgumentException("Unexpected structured sourced answer tool call: "
+                    + (function == null ? "" : function.name()));
+        }
+        try {
+            return objectMapper.readValue(function.arguments(), SourcedAnswerResult.class);
+        } catch (JsonProcessingException error) {
+            throw new IllegalArgumentException("Could not parse structured sourced answer tool call.", error);
+        }
     }
 
     private <T> void logRawStructuredResponse(String conversationId, Class<T> responseType, String raw) {

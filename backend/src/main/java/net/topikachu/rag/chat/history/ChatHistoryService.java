@@ -14,7 +14,8 @@ import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
@@ -34,17 +35,20 @@ public class ChatHistoryService {
     private final ChatMessageSerializer serializer;
     private final ChatSessionTitleService titleService;
     private final ChatMemory chatMemory;
+    private final PlatformTransactionManager transactionManager;
 
     public ChatHistoryService(ChatSessionMapper sessionMapper,
                               ChatMessageMapper messageMapper,
                               ChatMessageSerializer serializer,
                               ChatSessionTitleService titleService,
-                              ChatMemory chatMemory) {
+                              ChatMemory chatMemory,
+                              PlatformTransactionManager transactionManager) {
         this.sessionMapper = sessionMapper;
         this.messageMapper = messageMapper;
         this.serializer = serializer;
         this.titleService = titleService;
         this.chatMemory = chatMemory;
+        this.transactionManager = transactionManager;
     }
 
     public Mono<Void> saveTurn(String conversationId,
@@ -66,7 +70,6 @@ public class ChatHistoryService {
                 .then();
     }
 
-    @Transactional
     public void saveTurnBlocking(String conversationId,
                                  String userId,
                                  String userInput,
@@ -74,19 +77,22 @@ public class ChatHistoryService {
                                  String modelId,
                                  String mode,
                                  String msgId) {
-        ChatSessionEntity session = ensureSession(conversationId, userId, userInput);
-        int maxIndex = messageMapper.selectMaxMessageIndex(session.getId());
-        insertMessage(session, uniqueMessageId(msgId, "user"), new UserMessage(userInput), maxIndex + 1, modelId, mode);
-        insertMessage(session, msgId, new AssistantMessage(assistantAnswer), maxIndex + 2, modelId, mode);
+        TransactionTemplate tx = new TransactionTemplate(transactionManager);
+        tx.executeWithoutResult(status -> {
+            ChatSessionEntity session = ensureSession(conversationId, userId, userInput);
+            int maxIndex = messageMapper.selectMaxMessageIndex(session.getId());
+            insertMessage(session, uniqueMessageId(msgId, "user"), new UserMessage(userInput), maxIndex + 1, modelId, mode);
+            insertMessage(session, msgId, new AssistantMessage(assistantAnswer), maxIndex + 2, modelId, mode);
 
-        ChatSessionEntity update = new ChatSessionEntity();
-        update.setId(session.getId());
-        update.setLastMessageAt(LocalDateTime.now());
-        sessionMapper.updateById(update);
+            ChatSessionEntity update = new ChatSessionEntity();
+            update.setId(session.getId());
+            update.setLastMessageAt(LocalDateTime.now());
+            sessionMapper.updateById(update);
 
-        if ("PENDING".equals(session.getTitleStatus())) {
-            titleService.generateTitleIfNeeded(session.getConversationId(), userId, userInput);
-        }
+            if ("PENDING".equals(session.getTitleStatus())) {
+                titleService.generateTitleIfNeeded(session.getConversationId(), userId, userInput);
+            }
+        });
     }
 
     public Mono<ChatSessionPage> listSessions(String userId, String keyword, int page, int size) {

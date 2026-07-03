@@ -3,6 +3,7 @@ package net.topikachu.rag.service.chat;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import net.topikachu.rag.agent.AgentResolution;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.openai.api.OpenAiApi;
 
 import java.util.List;
 
@@ -77,6 +78,66 @@ class ReactiveChatGatewayTest {
     }
 
     @Test
+    void decodeSourcedAnswerToolCallParsesArguments() {
+        OpenAiApi.ChatCompletion completion = sourcedAnswerCompletion(
+                ReactiveChatGateway.SUBMIT_SOURCED_ANSWER_TOOL,
+                """
+                        {"answer":"我们的高中叫测试高中。《test.pdf》第 1 页","answerType":"factual","usedSources":["ev-1"]}
+                        """);
+
+        SourcedAnswerResult result = ReactiveChatGateway.decodeSourcedAnswerToolCall(completion, objectMapper);
+
+        assertEquals("factual", result.answerType());
+        assertEquals("ev-1", result.usedSources().get(0));
+    }
+
+    @Test
+    void sourcedAnswerToolUsesValidFunctionName() {
+        OpenAiApi.FunctionTool tool = ReactiveChatGateway.sourcedAnswerTool();
+
+        assertEquals(ReactiveChatGateway.SUBMIT_SOURCED_ANSWER_TOOL, tool.getFunction().getName());
+    }
+
+    @Test
+    void decodeSourcedAnswerToolCallRejectsMissingToolCall() {
+        OpenAiApi.ChatCompletionMessage message = new OpenAiApi.ChatCompletionMessage(
+                "plain answer",
+                OpenAiApi.ChatCompletionMessage.Role.ASSISTANT);
+        OpenAiApi.ChatCompletion completion = completion(message);
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> ReactiveChatGateway.decodeSourcedAnswerToolCall(completion, objectMapper));
+
+        assertEquals("Missing structured sourced answer tool call.", error.getMessage());
+    }
+
+    @Test
+    void decodeSourcedAnswerToolCallRejectsUnexpectedToolName() {
+        OpenAiApi.ChatCompletion completion = sourcedAnswerCompletion(
+                "otherTool",
+                """
+                        {"answer":"answer","answerType":"factual","usedSources":["ev-1"]}
+                        """);
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> ReactiveChatGateway.decodeSourcedAnswerToolCall(completion, objectMapper));
+
+        assertEquals("Unexpected structured sourced answer tool call: otherTool", error.getMessage());
+    }
+
+    @Test
+    void decodeSourcedAnswerToolCallRejectsInvalidArgumentsJson() {
+        OpenAiApi.ChatCompletion completion = sourcedAnswerCompletion(
+                ReactiveChatGateway.SUBMIT_SOURCED_ANSWER_TOOL,
+                "{bad json");
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> ReactiveChatGateway.decodeSourcedAnswerToolCall(completion, objectMapper));
+
+        assertEquals("Could not parse structured sourced answer tool call.", error.getMessage());
+    }
+
+    @Test
     void decodeWithThinkTags() {
         String raw = """
                 <think>
@@ -132,5 +193,39 @@ class ReactiveChatGatewayTest {
     @Test
     void stripThinkTagsHandlesNull() {
         assertNull(ReactiveChatGateway.stripThinkTags(null));
+    }
+
+    private OpenAiApi.ChatCompletion sourcedAnswerCompletion(String toolName, String arguments) {
+        OpenAiApi.ChatCompletionMessage.ToolCall toolCall = new OpenAiApi.ChatCompletionMessage.ToolCall(
+                "call-1",
+                "function",
+                new OpenAiApi.ChatCompletionMessage.ChatCompletionFunction(toolName, arguments));
+        OpenAiApi.ChatCompletionMessage message = new OpenAiApi.ChatCompletionMessage(
+                "",
+                OpenAiApi.ChatCompletionMessage.Role.ASSISTANT,
+                null,
+                null,
+                List.of(toolCall),
+                null,
+                null,
+                null,
+                null);
+        return completion(message);
+    }
+
+    private OpenAiApi.ChatCompletion completion(OpenAiApi.ChatCompletionMessage message) {
+        return new OpenAiApi.ChatCompletion(
+                "chatcmpl-test",
+                List.of(new OpenAiApi.ChatCompletion.Choice(
+                        OpenAiApi.ChatCompletionFinishReason.TOOL_CALLS,
+                        0,
+                        message,
+                        null)),
+                0L,
+                "deepseek-chat",
+                null,
+                null,
+                "chat.completion",
+                null);
     }
 }

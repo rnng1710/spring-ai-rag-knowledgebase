@@ -1,9 +1,14 @@
 <template>
-  <div class="chat-shell">
+  <div class="chat-shell" :class="{ 'sidebar-collapsed': isSidebarCollapsed }">
     <aside class="chat-sidebar">
       <div class="chat-sidebar-header">
-        <div class="chat-title">{{ t("common.appName") }}</div>
-        <div class="chat-sub">{{ t("chat.signedInAs", { username }) }}</div>
+        <div class="header-text-group">
+          <div class="chat-title">{{ t("common.appName") }}</div>
+          <div class="chat-sub">{{ t("chat.signedInAs", { username }) }}</div>
+        </div>
+        <el-button text circle size="small" @click="isSidebarCollapsed = true" class="sidebar-collapse-btn">
+          <el-icon size="18"><Fold /></el-icon>
+        </el-button>
       </div>
 
 
@@ -34,7 +39,6 @@
           >
             <div class="history-item-main">
               <span class="history-title">{{ session.title }}</span>
-              <span class="history-time">{{ formatSessionTime(session.lastMessageAt) }}</span>
             </div>
             <div class="history-actions">
               <el-button
@@ -64,6 +68,15 @@
     </aside>
     
     <main class="chat-main">
+      <el-button 
+        v-if="isSidebarCollapsed" 
+        class="sidebar-expand-btn"
+        text
+        circle
+        @click="isSidebarCollapsed = false"
+      >
+        <el-icon size="20"><Expand /></el-icon>
+      </el-button>
       
       <!-- Initial State: Centered Greeting -->
       <div v-if="messages.length === 0" class="chat-center-container">
@@ -254,7 +267,7 @@ import {
   type ChatSessionItem,
 } from "../api/chatHistory";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Plus, SwitchButton, Position, Close, Collection, Search, EditPen, Delete } from "@element-plus/icons-vue";
+import { Plus, SwitchButton, Position, Close, Collection, Search, EditPen, Delete, Fold, Expand } from "@element-plus/icons-vue";
 import { clearAuthSession, getAccessToken, getUsernameFromAccessToken } from "../utils/auth";
 import { useI18n } from "vue-i18n";
 import MarkdownRenderer from "../components/MarkdownRenderer.vue";
@@ -265,6 +278,7 @@ const { t } = useI18n();
 const username = ref(getUsernameFromAccessToken(getAccessToken()) || localStorage.getItem("auth_user") || "user");
 const conversationId = ref(`conv-${Math.random().toString(36).slice(2, 8)}`);
 const question = ref("");
+const isSidebarCollapsed = ref(false);
 const selectedSpaces = ref<string[]>([]);
 const selectedModel = ref("ollama");
 const selectedMode = ref<"rag" | "agent">("rag");
@@ -927,9 +941,45 @@ const logout = () => {
 /* Note: .chat-shell, .chat-sidebar, .chat-main are now inherited from base.css */
 
 /* Sidebar */
+/* Sidebar Animation */
+.chat-shell {
+  display: flex !important;
+}
+.chat-sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  transition: margin-left 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.chat-shell.sidebar-collapsed .chat-sidebar {
+  margin-left: -280px;
+  opacity: 0;
+}
+.chat-main {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+}
 .chat-sidebar-header {
   padding: 0 12px;
-  margin-bottom: 0px;
+  margin-bottom: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.header-text-group {
+  display: flex;
+  flex-direction: column;
+}
+.sidebar-collapse-btn {
+  color: var(--chat-text-secondary);
+}
+.sidebar-expand-btn {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  z-index: 10;
+  color: var(--chat-text-secondary);
+  transition: opacity 0.3s ease;
 }
 .chat-title {
   font-size: 20px;
@@ -961,6 +1011,9 @@ const logout = () => {
   flex: 1;
   overflow-y: auto;
   margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 .history-search {
   padding: 0 8px;
@@ -979,16 +1032,18 @@ const logout = () => {
   padding-left: 12px;
 }
 .chat-history-item {
-  padding: 10px 16px;
-  border-radius: 8px;
-  font-size: 14px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 13px;
   color: var(--chat-text-secondary);
   cursor: pointer;
-  margin-bottom: 4px;
   transition: background 0.2s;
   display: flex;
   align-items: center;
   gap: 8px;
+  background: transparent;
+  border: none;
+  min-height: 36px;
 }
 .chat-history-item:hover,
 .chat-history-item.active {
@@ -1006,10 +1061,7 @@ const logout = () => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.history-time {
-  font-size: 11px;
-  color: var(--chat-text-secondary);
+  font-size: 13px;
 }
 .history-actions {
   flex: 0 0 auto;
@@ -1023,6 +1075,9 @@ const logout = () => {
 }
 .history-actions :deep(.el-button) {
   color: var(--chat-text-secondary);
+  padding: 4px;
+  height: 24px;
+  width: 24px;
 }
 
 /* --- Initial State --- */

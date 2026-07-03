@@ -21,6 +21,8 @@ import java.util.concurrent.TimeUnit;
 public class DeepSeekChatModelStrategy implements ChatModelStrategy {
 
     private final ChatClient chatClient;
+    private final OpenAiApi openAiApi;
+    private final String model;
 
     public DeepSeekChatModelStrategy(LlmProperties properties) {
         // 同时配置 WebClient 和 RestClient 超时：Spring AI 的 OpenAiApi 内部同时使用反应式和阻塞 HTTP 客户端，两者需一致
@@ -46,9 +48,11 @@ public class DeepSeekChatModelStrategy implements ChatModelStrategy {
                 .restClientBuilder(restClientBuilder)
                 .webClientBuilder(webClientBuilder)
                 .build();
+        this.openAiApi = openAiApi;
+        this.model = properties.getChat().getOptions().getModel();
 
         OpenAiChatOptions options = OpenAiChatOptions.builder()
-                .model(properties.getChat().getOptions().getModel())
+                .model(model)
                 .build();
 
         OpenAiChatModel chatModel = OpenAiChatModel.builder()
@@ -67,6 +71,14 @@ public class DeepSeekChatModelStrategy implements ChatModelStrategy {
     @Override
     public ChatClient getChatClient() {
         return this.chatClient;
+    }
+
+    public OpenAiApi getOpenAiApi() {
+        return openAiApi;
+    }
+
+    public String getModel() {
+        return model;
     }
 
     @Override
