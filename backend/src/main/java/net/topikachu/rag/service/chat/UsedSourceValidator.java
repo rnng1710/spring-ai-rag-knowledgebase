@@ -119,11 +119,10 @@ public class UsedSourceValidator {
         return value == null ? null : value.toString();
     }
 
-    // 解析溯源展示位置：四级 fallback 链
+    // 解析溯源展示位置：source_location > page_start/page_end > parent_index
     // ① 显式 source_location（DOCX/MD 面包屑，如"学生纪律 > 开除程序"）
     // ② page_start/page_end（PDF 页码范围，如"3-4"或"5"）
     // ③ parent_index → "片段N"（无标题结构的非 PDF 文档）
-    // ④ page_number / page（最老数据的兜底兼容）
     private Object sourceLocation(Map<String, Object> metadata) {
         // ① 优先：语义化溯源路径（DOCX/MD 策略写入的面包屑）
         Object sourceLocation = metadata.get("source_location");
@@ -144,8 +143,7 @@ public class UsedSourceValidator {
         if (parentIndex != null) {
             return "片段" + parentIndex;
         }
-        // ④ 兜底：旧版元数据的 page_number / page
-        return metadata.getOrDefault("page_number", metadata.get("page"));
+        return null;
     }
 
     private String fileType(String fileName) {

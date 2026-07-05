@@ -2,6 +2,7 @@ package net.topikachu.rag.business.document.service.impl;
 
 import net.topikachu.rag.business.document.entity.Document;
 import net.topikachu.rag.business.document.entity.DocumentStatus;
+import net.topikachu.rag.business.document.access.KnowledgeAccessPolicy;
 import net.topikachu.rag.business.document.mapper.DocumentMapper;
 import net.topikachu.rag.business.document.mapper.KnowledgeAclRefreshTaskMapper;
 import net.topikachu.rag.business.document.service.EtlJobService;
@@ -46,6 +47,7 @@ class DocumentServiceImplTest {
     private DocumentUploadHandler uploadHandler;
     private AclRefreshManager aclRefreshManager;
     private DocumentServiceImpl service;
+    private KnowledgeAccessPolicy accessPolicy;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -56,6 +58,7 @@ class DocumentServiceImplTest {
         parentBlockService = mock(KnowledgeParentBlockService.class);
         transactionManager = mock(PlatformTransactionManager.class);
         aclRefreshManager = mock(AclRefreshManager.class);
+        accessPolicy = new KnowledgeAccessPolicy();
         uploadHandler = new DocumentUploadHandler(
                 documentMapper,
                 tracingSupport,
@@ -71,7 +74,7 @@ class DocumentServiceImplTest {
                 parentBlockService,
                 objectStorageService,
                 uploadHandler,
-                new DocumentPermissionManager(),
+                new DocumentPermissionManager(accessPolicy),
                 aclRefreshManager);
 
         ReflectionTestUtils.setField(service, "inputDirectory", tempDir.toString());
@@ -360,7 +363,7 @@ class DocumentServiceImplTest {
         DocumentServiceImpl failService = new DocumentServiceImpl(
                 documentMapper, mock(MilvusWriteGateway.class), mock(KnowledgeAclRefreshTaskMapper.class),
                 failEtlJobService, parentBlockService, failOss,
-                failUploadHandler, new DocumentPermissionManager(), mock(AclRefreshManager.class));
+                failUploadHandler, new DocumentPermissionManager(accessPolicy), mock(AclRefreshManager.class));
         ReflectionTestUtils.setField(failService, "inputDirectory", tempDir.toString());
         ReflectionTestUtils.setField(failUploadHandler, "inputDirectory", tempDir.toString());
         ReflectionTestUtils.setField(failUploadHandler, "allowedExt", "pdf,doc,docx,txt,md");
