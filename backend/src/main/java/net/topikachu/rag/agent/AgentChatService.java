@@ -6,12 +6,12 @@ import net.topikachu.rag.auth.SearchScope;
 import net.topikachu.rag.chat.history.ChatHistoryService;
 import net.topikachu.rag.observability.TracingSupport;
 import net.topikachu.rag.service.chat.GroundedTurnModule;
+import net.topikachu.rag.service.chat.RetrievalException;
 import net.topikachu.rag.service.chat.SourceValidationException;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.document.Document;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -26,27 +26,24 @@ import java.util.Map;
 @Slf4j
 public class AgentChatService {
 
-    private final AgentExecutor executor;
+    private final AdaptiveEvidenceWorkflow workflow;
     private final ChatMemory chatMemory;
     private final ConversationExecutionGuard conversationExecutionGuard;
     private final AgentTurnStateStore agentTurnStateStore;
     private final TracingSupport tracingSupport;
-    private final GroundedTurnModule groundedTurnModule;
     private final ChatHistoryService chatHistoryService;
 
-    public AgentChatService(AgentExecutor executor,
+    public AgentChatService(AdaptiveEvidenceWorkflow workflow,
                             ChatMemory chatMemory,
                             ConversationExecutionGuard conversationExecutionGuard,
                             AgentTurnStateStore agentTurnStateStore,
                             TracingSupport tracingSupport,
-                            GroundedTurnModule groundedTurnModule,
                             ChatHistoryService chatHistoryService) {
-        this.executor = executor;
+        this.workflow = workflow;
         this.chatMemory = chatMemory;
         this.conversationExecutionGuard = conversationExecutionGuard;
         this.agentTurnStateStore = agentTurnStateStore;
         this.tracingSupport = tracingSupport;
-        this.groundedTurnModule = groundedTurnModule;
         this.chatHistoryService = chatHistoryService;
     }
 
@@ -69,21 +66,29 @@ public class AgentChatService {
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMapMany(lease -> {
                     agentTurnStateStore.createPending(msgId, conversationId, userInput);
-                    return executor.execute(userInput, conversationId, msgId, currentUserContext, searchScope, modelId)
-                            .flatMapMany(result -> {
-                                Flux<ServerSentEvent<Object>> traceEvents = buildTraceEvents(result.notes(), msgId);
-                                if (result.isFollowup()) {
+                    AdaptiveEvidenceWorkflow.AgentRequest request = new AdaptiveEvidenceWorkflow.AgentRequest(
+                            userInput,
+                            conversationId,
+                            msgId,
+                            currentUserContext,
+                            searchScope,
+                            modelId,
+                            traceId);
+                    return workflow.execute(request)
+                            .flatMapMany(outcome -> {
+                                Flux<ServerSentEvent<Object>> traceEvents = buildTraceEvents(outcome.notes(), msgId);
+                                if (outcome instanceof AdaptiveEvidenceWorkflow.Clarify clarify) {
                                     ServerSentEvent<Object> followupEvent = buildEvent("followup",
                                             Map.of(
                                                     "msgId", msgId,
-                                                    "text", result.followupPrompt(),
-                                                    "options", result.followupOptions()));
+                                                    "text", clarify.prompt(),
+                                                    "options", clarify.options()));
                                     Mono<ServerSentEvent<Object>> completion = addChatMemory(conversationId, List.of(
                                                     new UserMessage(userInput),
-                                                    new AssistantMessage(result.followupPrompt())))
+                                                    new AssistantMessage(clarify.prompt())))
                                             .then(chatHistoryService.saveTurn(
                                                     conversationId, currentUserContext.userId(),
-                                                    userInput, result.followupPrompt(), modelId, "agent", msgId))
+                                                    userInput, clarify.prompt(), modelId, "agent", msgId))
                                             .doOnSuccess(ignored -> agentTurnStateStore.complete(msgId))
                                             .thenReturn(buildEvent("done", Map.of("msgId", msgId)));
 
@@ -94,39 +99,29 @@ public class AgentChatService {
                                             .onErrorResume(exp -> failRequest(msgId, "追问结果保存失败。"));
                                 }
 
-                                List<Document> candidateEvidence = result.candidateEvidence().stream()
-                                        .map(source -> Document.builder()
-                                                .id(source.id())
-                                                .text(source.text())
-                                                .metadata(source.metadataSnapshot())
-                                                .build())
-                                        .toList();
-                                GroundedTurnModule.Command command = new GroundedTurnModule.Command(
-                                        userInput,
-                                        conversationId,
-                                        currentUserContext.userId(),
-                                        modelId,
-                                        "agent",
-                                        msgId,
-                                        traceId,
-                                        candidateEvidence,
-                                        result.parentContexts());
-                                Flux<ServerSentEvent<Object>> groundedEvents = Mono.defer(() -> groundedTurnModule.execute(command))
-                                        .doOnSuccess(ignored -> agentTurnStateStore.complete(msgId))
-                                        .flatMapMany(grounded -> {
-                                            Map<String, Object> sourcePayload = new LinkedHashMap<>();
-                                            sourcePayload.put("msgId", msgId);
-                                            sourcePayload.put("sources", grounded.usedSources());
-                                            return Flux.just(
-                                                    buildEvent("sources", sourcePayload),
-                                                    buildEvent("message", Map.of("msgId", msgId, "chunk", grounded.answer())),
-                                                    buildEvent("done", Map.of("msgId", msgId)));
-                                        })
-                                        .onErrorResume(error -> failRequest(msgId, groundedFailureMessage(error)));
+                                GroundedTurnModule.Result result;
+                                if (outcome instanceof AdaptiveEvidenceWorkflow.Answer answer) {
+                                    result = answer.result();
+                                }
+                                else if (outcome instanceof AdaptiveEvidenceWorkflow.Refusal refusal) {
+                                    result = refusal.result();
+                                }
+                                else {
+                                    return failRequest(msgId, "Agent 工作流返回了未知结果。");
+                                }
 
-                                return Flux.concat(traceEvents, groundedEvents);
+                                agentTurnStateStore.complete(msgId);
+                                Map<String, Object> sourcePayload = new LinkedHashMap<>();
+                                sourcePayload.put("msgId", msgId);
+                                sourcePayload.put("sources", result.usedSources());
+                                return Flux.concat(
+                                        traceEvents,
+                                        Flux.just(
+                                                buildEvent("sources", sourcePayload),
+                                                buildEvent("message", Map.of("msgId", msgId, "chunk", result.answer())),
+                                                buildEvent("done", Map.of("msgId", msgId))));
                             })
-                            .onErrorResume(exp -> failRequest(msgId, "工具阶段执行失败。"))
+                            .onErrorResume(error -> failRequest(msgId, workflowFailureMessage(error)))
                             .doFinally(signalType -> {
                                 agentTurnStateStore.cleanupExpired();
                                 lease.close();
@@ -163,11 +158,14 @@ public class AgentChatService {
                 buildEvent("done", Map.of("msgId", msgId)));
     }
 
-    private String groundedFailureMessage(Throwable error) {
+    private String workflowFailureMessage(Throwable error) {
         if (error instanceof SourceValidationException sourceValidationException) {
             return sourceValidationException.getUserMessage();
         }
-        return "答案生成或持久化失败。";
+        if (error instanceof RetrievalException retrievalException) {
+            return retrievalException.getUserMessage();
+        }
+        return "Agent 工作流执行失败。";
     }
 
     private ServerSentEvent<Object> buildEvent(String event, Object data) {

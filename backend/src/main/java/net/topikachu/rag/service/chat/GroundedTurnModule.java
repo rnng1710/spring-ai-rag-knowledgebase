@@ -49,23 +49,69 @@ public final class GroundedTurnModule {
 
     public Mono<Result> execute(Command command) {
         Objects.requireNonNull(command, "command must not be null");
+        if (command.answerPolicy() == AnswerPolicy.KNOWLEDGE_REFUSAL) {
+            return validatedResult(
+                            new SourcedAnswerResult(
+                                    UsedSourceValidator.UNRELIABLE_SOURCE_MESSAGE,
+                                    "refusal",
+                                    List.of()),
+                            command,
+                            0)
+                    .flatMap(result -> commit(command, result).thenReturn(result));
+        }
         return loadHistory(command.conversationId())
                 .flatMap(history -> {
                     String context = contextFormatter.formatParentContexts(command.parentContexts());
                     ChatModelStrategy strategy = strategyFactory.getStrategy(command.modelId());
-                    return strategy.callSourcedAnswer(
-                            reactiveChatGateway,
-                            context,
-                            command.userInput(),
-                            command.conversationId(),
-                            history);
+                    return generateValidated(command, strategy, context, history, 0, null);
                 })
-                .onErrorMap(this::toSourceValidationError)
-                .map(answer -> new Result(
-                        answer.answer(),
-                        answer.answerType(),
-                        usedSourceValidator.validate(answer, command.candidateEvidence())))
                 .flatMap(result -> commit(command, result).thenReturn(result));
+    }
+
+    private Mono<Result> generateValidated(Command command,
+                                           ChatModelStrategy strategy,
+                                           String context,
+                                           List<Message> history,
+                                           int repairCount,
+                                           String repairInstruction) {
+        return Mono.defer(() -> strategy.callSourcedAnswer(
+                        reactiveChatGateway,
+                        context,
+                        command.userInput(),
+                        command.conversationId(),
+                        history,
+                        repairInstruction))
+                .onErrorMap(this::toSourceValidationError)
+                .flatMap(answer -> validatedResult(answer, command, repairCount))
+                .onErrorResume(SourceValidationException.class, error -> {
+                    if (repairCount > 0 || command.maxAnswerRepairs() <= 0) {
+                        return Mono.error(error);
+                    }
+                    String instruction = SourcedAnswerPrompts.repairInstruction(
+                            error.getReason(),
+                            allowedEvidenceIds(command.candidateEvidence()));
+                    return generateValidated(command, strategy, context, history, 1, instruction);
+                });
+    }
+
+    private Mono<Result> validatedResult(SourcedAnswerResult answer, Command command, int repairCount) {
+        return Mono.fromCallable(() -> new Result(
+                answer.answer(),
+                answer.answerType(),
+                usedSourceValidator.validate(answer, command.candidateEvidence()),
+                repairCount));
+    }
+
+    private List<String> allowedEvidenceIds(List<Document> candidates) {
+        return candidates.stream()
+                .map(candidate -> {
+                    Object evidenceId = candidate.getMetadata().get("evidence_id");
+                    return evidenceId == null ? candidate.getId() : evidenceId.toString().trim();
+                })
+                .filter(Objects::nonNull)
+                .filter(id -> !id.isBlank())
+                .distinct()
+                .toList();
     }
 
     private Mono<List<Message>> loadHistory(String conversationId) {
@@ -117,9 +163,7 @@ public final class GroundedTurnModule {
         if (error instanceof SourceValidationException) {
             return error;
         }
-        if (error instanceof IllegalArgumentException
-                && error.getMessage() != null
-                && error.getMessage().contains("structured")) {
+        if (error instanceof StructuredResponseException) {
             log.warn("Structured grounded answer parse failed: {}. Cause: {}",
                     error.getMessage(),
                     error.getCause() == null ? "no cause" : error.getCause().getMessage());
@@ -150,15 +194,26 @@ public final class GroundedTurnModule {
             String msgId,
             String traceId,
             List<Document> candidateEvidence,
-            List<ParentContextBlock> parentContexts) {
+            List<ParentContextBlock> parentContexts,
+            AnswerPolicy answerPolicy,
+            int maxAnswerRepairs) {
 
         public Command {
             candidateEvidence = candidateEvidence == null ? List.of() : List.copyOf(candidateEvidence);
             parentContexts = parentContexts == null ? List.of() : List.copyOf(parentContexts);
+            Objects.requireNonNull(answerPolicy, "answerPolicy must not be null");
+            if (maxAnswerRepairs < 0 || maxAnswerRepairs > 1) {
+                throw new IllegalArgumentException("maxAnswerRepairs must be 0 or 1");
+            }
         }
     }
 
-    public record Result(String answer, String answerType, List<UsedSource> usedSources) {
+    public enum AnswerPolicy {
+        GROUNDED,
+        KNOWLEDGE_REFUSAL
+    }
+
+    public record Result(String answer, String answerType, List<UsedSource> usedSources, int repairCount) {
 
         public Result {
             usedSources = usedSources == null ? List.of() : List.copyOf(usedSources);

@@ -7,25 +7,37 @@ import net.topikachu.rag.business.document.entity.KnowledgeParentBlock;
 import net.topikachu.rag.observability.TracingSupport;
 import net.topikachu.rag.service.etl.KnowledgeParentBlockService;
 import org.springframework.ai.document.Document;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 @Service
 @Slf4j
 public class RetrievalPipeline {
 
+	static final String RERANK_FALLBACK = "rerank_fallback";
+	private static final String RERANK_SCORE = "rerank_score";
+	private static final int MAX_REFINEMENT_QUERIES = 4;
+	private static final int MAX_MULTI_QUERY_CONCURRENCY = 4;
+
     private final HybridSearchService hybridSearchService;
     private final RerankService rerankService;
     private final TracingSupport tracingSupport;
     private final KnowledgeParentBlockService parentBlockService;
+
+    @Value("${rag.retrieval.rrf-k:60}")
+    private int rrfK = 60;
 
     public RetrievalPipeline(HybridSearchService hybridSearchService,
                              RerankService rerankService,
@@ -61,6 +73,41 @@ public class RetrievalPipeline {
                                                             int rerankTopK,
                                                             Map<String, Object> extraTags) {
         return retrieveInternal(query, currentUserContext, searchScope, hybridTopK, rerankTopK, true, true, extraTags)
+                .flatMap(childCandidates -> expandParentContexts(childCandidates)
+                        .map(parentContexts -> new RetrievalResult(childCandidates, parentContexts)));
+    }
+
+    public Mono<RetrievalResult> refineWithQueries(String originalQuestion,
+                                                    List<String> queries,
+                                                    List<Document> existingCandidates,
+                                                    CurrentUserContext currentUserContext,
+                                                    SearchScope searchScope,
+                                                    int hybridTopK,
+                                                    int rerankTopK) {
+        List<Document> existingRanking = copyDocuments(existingCandidates);
+        List<String> boundedQueries = queries == null
+                ? List.of()
+                : queries.stream().limit(MAX_REFINEMENT_QUERIES).toList();
+        if (boundedQueries.isEmpty()) {
+            List<Document> limited = limit(existingRanking, rerankTopK);
+            return expandParentContexts(limited)
+                    .map(parentContexts -> new RetrievalResult(limited, parentContexts));
+        }
+
+        return Flux.fromIterable(boundedQueries)
+                .flatMapSequential(query -> hybridSearchService
+                                .hybridSearch(query, currentUserContext, searchScope, hybridTopK, true)
+                                .map(this::copyDocuments),
+                        MAX_MULTI_QUERY_CONCURRENCY)
+                .collectList()
+                .map(queryRankings -> {
+                    List<List<Document>> rankings = new ArrayList<>(queryRankings.size() + 1);
+                    rankings.add(existingRanking);
+                    rankings.addAll(queryRankings);
+                    return reciprocalRankFusion(rankings);
+                })
+                .flatMap(fused -> rerankWithFallback(originalQuestion, fused, rerankTopK))
+                .map(documents -> limit(documents, rerankTopK))
                 .flatMap(childCandidates -> expandParentContexts(childCandidates)
                         .map(parentContexts -> new RetrievalResult(childCandidates, parentContexts)));
     }
@@ -103,19 +150,73 @@ public class RetrievalPipeline {
                         // rerankTopK 在此兼任截断上限：跳过重排序时直接按此数量截断候选集
                         return Mono.just(candidates.subList(0, Math.min(candidates.size(), rerankTopK)));
                     }
-                    long rerankStart = System.currentTimeMillis();
-                    return tracingSupport.traceMono("rag.rerank",
-                                    Map.of(
-                                            "rag.candidate_count", candidates.size(),
-                                            "rag.rerank_topk", rerankTopK),
-                                    rerankService.rerank(query, candidates, rerankTopK))
-                            .doOnNext(docs -> log.debug("Rerank returned {} docs in {}ms",
-                                    docs.size(), System.currentTimeMillis() - rerankStart))
-                            .onErrorResume(error -> {
-                                log.warn("Rerank failed, fallback to raw candidates: {}", error.getMessage());
-                                return Mono.just(candidates.subList(0, Math.min(candidates.size(), rerankTopK)));
-                            });
+                    return rerankWithFallback(query, candidates, rerankTopK);
                 });
+    }
+
+    private Mono<List<Document>> rerankWithFallback(String query, List<Document> candidates, int rerankTopK) {
+        long rerankStart = System.currentTimeMillis();
+        return tracingSupport.traceMono("rag.rerank",
+                        Map.of(
+                                "rag.candidate_count", candidates.size(),
+                                "rag.rerank_topk", rerankTopK),
+                        rerankService.rerank(query, candidates, rerankTopK))
+                .doOnNext(docs -> log.debug("Rerank returned {} docs in {}ms",
+                        docs.size(), System.currentTimeMillis() - rerankStart))
+                .onErrorResume(error -> {
+                    log.warn("Rerank failed, fallback to raw candidates: {}", error.getMessage());
+                    return Mono.just(markRerankFallback(limit(candidates, rerankTopK)));
+                });
+    }
+
+	private List<Document> markRerankFallback(List<Document> documents) {
+		List<Document> fallback = copyDocuments(documents);
+		fallback.forEach(document -> {
+			document.getMetadata().remove(RERANK_SCORE);
+			document.getMetadata().put(RERANK_FALLBACK, true);
+		});
+		return List.copyOf(fallback);
+	}
+
+    private List<Document> reciprocalRankFusion(List<List<Document>> rankings) {
+        Map<String, Document> documentsById = new LinkedHashMap<>();
+        Map<String, Double> scoresById = new LinkedHashMap<>();
+        int k = Math.max(0, rrfK);
+
+        for (List<Document> ranking : rankings) {
+            Set<String> seenInRanking = new HashSet<>();
+            for (int index = 0; index < ranking.size(); index++) {
+                Document document = ranking.get(index);
+                String id = evidenceId(document);
+                if (!StringUtils.hasText(id) || !seenInRanking.add(id)) {
+                    continue;
+                }
+                documentsById.putIfAbsent(id, document);
+                scoresById.merge(id, 1.0d / (k + index + 1), Double::sum);
+            }
+        }
+
+        return scoresById.entrySet().stream()
+                .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
+                .map(entry -> documentsById.get(entry.getKey()))
+                .toList();
+    }
+
+    private List<Document> copyDocuments(List<Document> documents) {
+        if (documents == null || documents.isEmpty()) {
+            return List.of();
+        }
+        return documents.stream()
+                .filter(Objects::nonNull)
+                .map(document -> new Document(
+                        document.getId(),
+                        document.getText(),
+                        new java.util.HashMap<>(document.getMetadata())))
+                .toList();
+    }
+
+    private List<Document> limit(List<Document> documents, int maximum) {
+        return List.copyOf(documents.subList(0, Math.min(documents.size(), Math.max(0, maximum))));
     }
 
     // 子块回查父块：将检索命中的子块按 parent_block_id 去重聚合，批量查询 MySQL 获取完整父块上下文

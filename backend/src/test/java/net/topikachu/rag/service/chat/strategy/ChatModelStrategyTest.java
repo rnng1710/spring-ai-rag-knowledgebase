@@ -53,7 +53,8 @@ class ChatModelStrategyTest {
                         "ctx",
                         "question",
                         "conversation-1",
-                        history))
+                        history,
+                        null))
                 .expectNext(expected)
                 .verifyComplete();
     }

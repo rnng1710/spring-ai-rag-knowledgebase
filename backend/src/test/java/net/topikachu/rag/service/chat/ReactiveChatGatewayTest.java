@@ -1,7 +1,6 @@
 package net.topikachu.rag.service.chat;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import net.topikachu.rag.agent.AgentResolution;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.openai.api.OpenAiApi;
 
@@ -21,7 +20,8 @@ class ReactiveChatGatewayTest {
                 {"type":"followup","answerMode":"normal","draftAnswer":"","finalInstruction":"","selectedEvidenceIds":["e1"]}
                 """;
 
-        AgentResolution resolution = ReactiveChatGateway.decodeStructuredResponse(raw, AgentResolution.class, objectMapper);
+        TestStructuredResponse resolution = ReactiveChatGateway.decodeStructuredResponse(
+                raw, TestStructuredResponse.class, objectMapper);
 
         assertEquals("followup", resolution.type());
         assertEquals("normal", resolution.answerMode());
@@ -44,7 +44,8 @@ class ReactiveChatGatewayTest {
                 ```
                 """;
 
-        AgentResolution resolution = ReactiveChatGateway.decodeStructuredResponse(raw, AgentResolution.class, objectMapper);
+        TestStructuredResponse resolution = ReactiveChatGateway.decodeStructuredResponse(
+                raw, TestStructuredResponse.class, objectMapper);
 
         assertEquals("followup", resolution.type());
         assertEquals("normal", resolution.answerMode());
@@ -55,10 +56,10 @@ class ReactiveChatGatewayTest {
     void decodeStructuredResponseRejectsPlainText() {
         String raw = "你可能是在询问你的高中的名称。";
 
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> ReactiveChatGateway.decodeStructuredResponse(raw, AgentResolution.class, objectMapper));
+        StructuredResponseException error = assertThrows(StructuredResponseException.class,
+                () -> ReactiveChatGateway.decodeStructuredResponse(raw, TestStructuredResponse.class, objectMapper));
 
-        assertEquals("Could not parse structured tool-phase response.", error.getMessage());
+        assertEquals("Could not parse structured response.", error.getMessage());
     }
 
     @Test
@@ -227,5 +228,13 @@ class ReactiveChatGatewayTest {
                 null,
                 "chat.completion",
                 null);
+    }
+
+    private record TestStructuredResponse(
+            String type,
+            String answerMode,
+            String draftAnswer,
+            String finalInstruction,
+            List<String> selectedEvidenceIds) {
     }
 }

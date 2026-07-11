@@ -25,10 +25,11 @@ public interface ChatModelStrategy {
                                                         String context,
                                                         String userInput,
                                                         String conversationId,
-                                                        List<Message> historyMessages) {
+                                                        List<Message> historyMessages,
+                                                        String repairInstruction) {
         return reactiveChatGateway.callStructured(
                 getChatClient(),
-                SourcedAnswerPrompts.jsonPrompt(),
+                SourcedAnswerPrompts.jsonPrompt(repairInstruction),
                 Map.of("context", context),
                 historyMessages,
                 userInput,

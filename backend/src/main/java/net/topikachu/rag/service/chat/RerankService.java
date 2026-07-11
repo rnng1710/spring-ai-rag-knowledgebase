@@ -80,6 +80,7 @@ public class RerankService {
                             }
                             double score = scored.get(i).getValue();
                             Document originalDoc = docs.get(index);
+                            originalDoc.getMetadata().remove("rerank_fallback");
                             originalDoc.getMetadata().put("rerank_score", score);
                             rerankedDocs.add(originalDoc);
                         }
@@ -108,6 +109,15 @@ public class RerankService {
         if (docs == null || docs.isEmpty()) {
             return Mono.just(Collections.emptyList());
         }
-        return Mono.just(docs.subList(0, Math.min(docs.size(), topN)));
+        List<Document> fallback = docs.stream()
+                .limit(Math.min(docs.size(), topN))
+                .map(document -> {
+                    Map<String, Object> metadata = new HashMap<>(document.getMetadata());
+                    metadata.remove("rerank_score");
+                    metadata.put("rerank_fallback", true);
+                    return new Document(document.getId(), document.getText(), metadata);
+                })
+                .toList();
+        return Mono.just(fallback);
     }
 }

@@ -35,9 +35,9 @@
 `POST /api/v1/chat` 通过 SSE 返回结果，支持两种模式：
 
 - `rag`：默认快速模式，执行检索、重排、上下文组装和直接生成。
-- `agent`：多步骤 Agent 模式，包含规划、查询改写、知识检索、草稿、审查、修订、追问候选和最终答案阶段。
+- `agent`：自适应证据工作流，按 `Plan -> Retrieve -> Assess -> Compose -> Verify` 执行，弱证据最多修复检索一次。
 
-Agent 工具包括知识片段搜索、可用标签列表和追问选项生成，前端会展示阶段状态与流式回答。
+模型只能提出查询列表；ACL、空间/标签范围、预算、并发、重试和终止均由代码控制。前端继续使用原有阶段与结果事件。
 
 ### 异步 ETL 与任务治理
 
@@ -85,7 +85,7 @@ Spring Boot WebFlux Backend
   +-- /api/v1/chat              RAG / Agent SSE chat
   +-- /api/v1/auth              JWT login / refresh / password
   +-- /api/v1/docs              document CRUD, upload, retry, permissions
-  +-- AgentOrchestrator         planning, tool calls, review, final answer
+  +-- AdaptiveEvidenceWorkflow bounded plan -> retrieve -> assess -> compose -> verify
   +-- ChatService               retrieve -> rerank -> generate
   +-- HybridSearchService       Milvus dense + sparse + RRF
   +-- RerankService             TEI Cross-Encoder with circuit breaker
@@ -108,7 +108,7 @@ Spring Boot WebFlux Backend
 │   ├── sql/                 # schema migration / backfill scripts
 │   └── src/
 │       ├── main/java/net/topikachu/rag/
-│       │   ├── agent/       # Agent orchestration, tools, stages
+│       │   ├── agent/       # Adaptive evidence workflow, gate, run state, SSE mapping
 │       │   ├── ai/memory/   # Redis-backed chat memory
 │       │   ├── api/         # chat, auth, user, SSE controllers
 │       │   ├── auth/        # current user context and search scope
@@ -281,10 +281,16 @@ rag.retrieval.max-context-chars=8000
 
 ```properties
 rag.agent.enable=true
-rag.agent.max-steps=3
 rag.agent.timeout-ms=12000
+rag.agent.max-evidence-count=12
 rag.agent.default-mode=rag
+rag.agent.evidence.min-rerank-score=<校准生成的 T>
+rag.agent.evidence.min-supporting-evidence=<校准生成的 N>
+rag.agent.evidence.min-top-score-gap=<校准生成的 G>
 ```
+
+Agent 模式在 T/N/G 缺失时会安全拒绝启动工作流。连接项目 Milvus、BGE reranker 和 RAGAS 后，在 `backend/` 下运行
+`mvn -Drag.agent.calibration.enabled=true -Dtest=EvidenceGateCalibrationRunner test`；只有 52 题均成功且规则 precision ≥ 95% 时才会在 `target/evidence-gate-calibration.json` 生成逐题报告与配置值。
 
 ### ETL
 
@@ -397,9 +403,9 @@ The project fits internal policy, campus knowledge, notices, PDF/Office/Markdown
 `POST /api/v1/chat` streams responses over SSE and supports two modes:
 
 - `rag`: default fast path, retrieve -> rerank -> build context -> generate.
-- `agent`: multi-step flow with planning, query rewriting, retrieval, drafting, reviewing, revising, follow-up options, and final answer generation.
+- `agent`: adaptive `Plan -> Retrieve -> Assess -> Compose -> Verify` flow with at most one bounded retrieval repair.
 
-Agent tools include knowledge snippet search, available tag listing, and follow-up option generation. The frontend displays stage updates and streamed content.
+The model can only propose search queries; code owns ACL scope, budgets, concurrency, retries, and termination. Existing stage and result SSE events remain unchanged.
 
 ### Async ETL and Job Governance
 
@@ -447,7 +453,7 @@ Spring Boot WebFlux Backend
   +-- /api/v1/chat              RAG / Agent SSE chat
   +-- /api/v1/auth              JWT login / refresh / password
   +-- /api/v1/docs              document CRUD, upload, retry, permissions
-  +-- AgentOrchestrator         planning, tool calls, review, final answer
+  +-- AdaptiveEvidenceWorkflow bounded plan -> retrieve -> assess -> compose -> verify
   +-- ChatService               retrieve -> rerank -> generate
   +-- HybridSearchService       Milvus dense + sparse + RRF
   +-- RerankService             TEI Cross-Encoder with circuit breaker
@@ -470,7 +476,7 @@ Spring Boot WebFlux Backend
 │   ├── sql/                 # schema migration / backfill scripts
 │   └── src/
 │       ├── main/java/net/topikachu/rag/
-│       │   ├── agent/       # Agent orchestration, tools, stages
+│       │   ├── agent/       # Adaptive evidence workflow, gate, run state, SSE mapping
 │       │   ├── ai/memory/   # Redis-backed chat memory
 │       │   ├── api/         # chat, auth, user, SSE controllers
 │       │   ├── auth/        # current user context and search scope
@@ -643,10 +649,16 @@ rag.retrieval.max-context-chars=8000
 
 ```properties
 rag.agent.enable=true
-rag.agent.max-steps=3
 rag.agent.timeout-ms=12000
+rag.agent.max-evidence-count=12
 rag.agent.default-mode=rag
+rag.agent.evidence.min-rerank-score=<calibrated T>
+rag.agent.evidence.min-supporting-evidence=<calibrated N>
+rag.agent.evidence.min-top-score-gap=<calibrated G>
 ```
+
+Agent mode fails closed while T/N/G are absent. With the project Milvus, BGE reranker, and RAGAS services available, run
+`mvn -Drag.agent.calibration.enabled=true -Dtest=EvidenceGateCalibrationRunner test` from `backend/`; it writes `target/evidence-gate-calibration.json` only when all 52 cases succeed and the selected rule reaches at least 95% precision.
 
 ### ETL
 

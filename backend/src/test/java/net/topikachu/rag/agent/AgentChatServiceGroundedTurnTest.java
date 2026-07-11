@@ -5,7 +5,6 @@ import net.topikachu.rag.auth.SearchScope;
 import net.topikachu.rag.chat.history.ChatHistoryService;
 import net.topikachu.rag.observability.TracingSupport;
 import net.topikachu.rag.service.chat.GroundedTurnModule;
-import net.topikachu.rag.service.chat.ParentContextBlock;
 import net.topikachu.rag.service.chat.SourceValidationException;
 import net.topikachu.rag.service.chat.UsedSource;
 import net.topikachu.rag.service.chat.UsedSourceValidator;
@@ -24,17 +23,16 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
 class AgentChatServiceGroundedTurnTest {
 
     @Mock
-    private AgentExecutor executor;
+    private AdaptiveEvidenceWorkflow workflow;
 
     @Mock
     private ChatMemory chatMemory;
@@ -46,9 +44,6 @@ class AgentChatServiceGroundedTurnTest {
     private TracingSupport tracingSupport;
 
     @Mock
-    private GroundedTurnModule groundedTurnModule;
-
-    @Mock
     private ChatHistoryService chatHistoryService;
 
     private AgentChatService service;
@@ -56,24 +51,21 @@ class AgentChatServiceGroundedTurnTest {
     @BeforeEach
     void setUp() {
         service = new AgentChatService(
-                executor,
+                workflow,
                 chatMemory,
                 new ConversationExecutionGuard(),
                 agentTurnStateStore,
                 tracingSupport,
-                groundedTurnModule,
                 chatHistoryService);
     }
 
     @Test
     void publishesOnlyValidatedUsedSourcesAfterGroundedTurnCompletes() {
-        AgentExecutionResult executionResult = answerResult();
         UsedSource usedSource = new UsedSource("ev-2", "doc-2", "second.pdf", 2, "pdf");
         when(tracingSupport.getCurrentTraceId()).thenReturn("trace-1");
-        when(executor.execute(eq("question"), eq("conversation-1"), eq("msg-1"), any(), any(), eq("model-1")))
-                .thenReturn(Mono.just(executionResult));
-        when(groundedTurnModule.execute(any()))
-                .thenReturn(Mono.just(new GroundedTurnModule.Result("answer", "factual", List.of(usedSource))));
+        when(workflow.execute(any())).thenReturn(Mono.just(new AdaptiveEvidenceWorkflow.Answer(
+                new GroundedTurnModule.Result("answer", "factual", List.of(usedSource), 0),
+                List.of())));
 
         List<ServerSentEvent<Object>> events = service.streamEvents(
                         "question",
@@ -91,21 +83,18 @@ class AgentChatServiceGroundedTurnTest {
         Map<?, ?> messagePayload = (Map<?, ?>) events.get(1).data();
         assertEquals("answer", messagePayload.get("chunk"));
 
-        ArgumentCaptor<GroundedTurnModule.Command> commandCaptor = ArgumentCaptor.forClass(GroundedTurnModule.Command.class);
-        verify(groundedTurnModule).execute(commandCaptor.capture());
-        assertEquals(List.of("ev-1", "ev-2"), commandCaptor.getValue().candidateEvidence().stream()
-                .map(document -> String.valueOf(document.getMetadata().get("evidence_id")))
-                .toList());
-        assertEquals("parent full text", commandCaptor.getValue().parentContexts().get(0).content());
+        ArgumentCaptor<AdaptiveEvidenceWorkflow.AgentRequest> requestCaptor =
+                ArgumentCaptor.forClass(AdaptiveEvidenceWorkflow.AgentRequest.class);
+        verify(workflow).execute(requestCaptor.capture());
+        assertEquals("question", requestCaptor.getValue().userInput());
+        assertEquals("trace-1", requestCaptor.getValue().traceId());
         verify(agentTurnStateStore).complete("msg-1");
     }
 
     @Test
     void validationFailurePublishesNoSourcesOrAnswer() {
         when(tracingSupport.getCurrentTraceId()).thenReturn("trace-1");
-        when(executor.execute(eq("question"), eq("conversation-1"), eq("msg-1"), any(), any(), eq("model-1")))
-                .thenReturn(Mono.just(answerResult()));
-        when(groundedTurnModule.execute(any())).thenReturn(Mono.error(new SourceValidationException(
+        when(workflow.execute(any())).thenReturn(Mono.error(new SourceValidationException(
                 UsedSourceValidator.UNRELIABLE_SOURCE_MESSAGE,
                 UsedSourceValidator.REASON_EVIDENCE_ID_NOT_IN_CANDIDATES)));
 
@@ -125,13 +114,62 @@ class AgentChatServiceGroundedTurnTest {
     }
 
     @Test
-    void followupBypassesGroundedTurn() {
-        AgentExecutionResult followup = new AgentExecutionResult(
-                List.of(), List.of(), List.of(), "请选择范围", List.of("本科生", "研究生"),
-                null, null, "normal", false);
+    void missingEvidenceGateCalibrationReturnsActionableError() {
         when(tracingSupport.getCurrentTraceId()).thenReturn("trace-1");
-        when(executor.execute(eq("question"), eq("conversation-1"), eq("msg-1"), any(), any(), eq("model-1")))
-                .thenReturn(Mono.just(followup));
+        EvidenceGate uncalibrated = new EvidenceGate(null, null, null);
+        IllegalStateException calibrationError = assertThrows(
+                IllegalStateException.class,
+                uncalibrated::requireCalibration);
+        when(workflow.execute(any())).thenReturn(Mono.error(calibrationError));
+
+        List<ServerSentEvent<Object>> events = service.streamEvents(
+                        "question",
+                        "conversation-1",
+                        currentUser(),
+                        SearchScope.empty(),
+                        "model-1",
+                        "msg-1")
+                .collectList()
+                .block();
+
+        assertEquals(List.of("error", "done"), events.stream().map(ServerSentEvent::event).toList());
+        assertEquals(
+                "Agent 证据门尚未校准，请联系管理员完成 T/N/G 校准后重试。",
+                ((Map<?, ?>) events.get(0).data()).get("message"));
+        assertFalse(events.stream().anyMatch(event ->
+                "sources".equals(event.event()) || "message".equals(event.event())));
+        verify(agentTurnStateStore).fail("msg-1");
+    }
+
+	@Test
+	void knowledgeRefusalUsesSourcesMessageDoneContract() {
+		when(tracingSupport.getCurrentTraceId()).thenReturn("trace-1");
+		when(workflow.execute(any())).thenReturn(Mono.just(new AdaptiveEvidenceWorkflow.Refusal(
+				new GroundedTurnModule.Result(
+						UsedSourceValidator.UNRELIABLE_SOURCE_MESSAGE,
+						"refusal",
+						List.of(),
+						0),
+				List.of())));
+
+		List<ServerSentEvent<Object>> events = service.streamEvents(
+						"question", "conversation-1", currentUser(), SearchScope.empty(), "model-1", "msg-1")
+				.collectList()
+				.block();
+
+		assertEquals(List.of("sources", "message", "done"),
+				events.stream().map(ServerSentEvent::event).toList());
+		assertEquals(UsedSourceValidator.UNRELIABLE_SOURCE_MESSAGE,
+				((Map<?, ?>) events.get(1).data()).get("chunk"));
+	}
+
+    @Test
+    void clarificationUsesExistingFollowupContract() {
+        when(tracingSupport.getCurrentTraceId()).thenReturn("trace-1");
+        when(workflow.execute(any())).thenReturn(Mono.just(new AdaptiveEvidenceWorkflow.Clarify(
+                "请选择范围",
+                List.of("本科生", "研究生"),
+                List.of())));
         when(chatHistoryService.saveTurn(
                 "conversation-1", "user-1", "question", "请选择范围", "model-1", "agent", "msg-1"))
                 .thenReturn(Mono.empty());
@@ -142,32 +180,6 @@ class AgentChatServiceGroundedTurnTest {
                 .block();
 
         assertEquals(List.of("followup", "done"), events.stream().map(ServerSentEvent::event).toList());
-        verifyNoInteractions(groundedTurnModule);
-    }
-
-    private AgentExecutionResult answerResult() {
-        ParentContextBlock parent = new ParentContextBlock(
-                "parent-1",
-                "doc-1",
-                "policy.pdf",
-                "parent full text",
-                1,
-                1,
-                2,
-                List.of("ev-1", "ev-2"),
-                1);
-        return new AgentExecutionResult(
-                List.of(
-                        new EvidenceSnapshot("ev-1", "first child", Map.of("evidence_id", "ev-1")),
-                        new EvidenceSnapshot("ev-2", "second child", Map.of("evidence_id", "ev-2"))),
-                List.of(parent),
-                List.of(),
-                null,
-                List.of(),
-                "ignored draft",
-                "ignored instruction",
-                "normal",
-                true);
     }
 
     private CurrentUserContext currentUser() {

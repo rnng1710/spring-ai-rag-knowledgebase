@@ -85,11 +85,12 @@ public class DeepSeekChatModelStrategy implements ChatModelStrategy {
                                                        String context,
                                                        String userInput,
                                                        String conversationId,
-                                                       List<Message> historyMessages) {
+                                                       List<Message> historyMessages,
+                                                       String repairInstruction) {
         return reactiveChatGateway.callSourcedAnswerTool(
                 openAiApi,
                 model,
-                SourcedAnswerPrompts.toolPrompt(),
+                SourcedAnswerPrompts.toolPrompt(repairInstruction),
                 Map.of("context", context),
                 historyMessages,
                 userInput);

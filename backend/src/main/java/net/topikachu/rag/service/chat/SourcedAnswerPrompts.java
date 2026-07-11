@@ -1,5 +1,7 @@
 package net.topikachu.rag.service.chat;
 
+import java.util.List;
+
 public final class SourcedAnswerPrompts {
 
     private static final String GROUNDING_RULES = """
@@ -39,6 +41,10 @@ public final class SourcedAnswerPrompts {
                 """ + CONTEXT;
     }
 
+    public static String jsonPrompt(String repairInstruction) {
+        return appendRepairInstruction(jsonPrompt(), repairInstruction);
+    }
+
     public static String toolPrompt() {
         return GROUNDING_RULES + """
                 9. 你必须调用 submitSourcedAnswer 工具提交最终结果。
@@ -50,5 +56,25 @@ public final class SourcedAnswerPrompts {
                 15. refusal 时 answerType=refusal，answer 说明当前知识库没有足够信息，usedSources 必须是空数组。
                 16. 不要输出内部思考、解释或代码块。
                 """ + CONTEXT;
+    }
+
+    public static String toolPrompt(String repairInstruction) {
+        return appendRepairInstruction(toolPrompt(), repairInstruction);
+    }
+
+    public static String repairInstruction(String reason, List<String> allowedEvidenceIds) {
+        return """
+
+                ================ 输出修复要求 ================
+                error_reason: %s
+                allowed_evidence_ids: %s
+                ============================================
+                """.formatted(reason, allowedEvidenceIds == null ? List.of() : allowedEvidenceIds);
+    }
+
+    private static String appendRepairInstruction(String prompt, String repairInstruction) {
+        return repairInstruction == null || repairInstruction.isBlank()
+                ? prompt
+                : prompt + repairInstruction;
     }
 }
