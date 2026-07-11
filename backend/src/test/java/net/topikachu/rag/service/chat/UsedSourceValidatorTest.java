@@ -54,6 +54,16 @@ class UsedSourceValidatorTest {
     }
 
     @Test
+    void rejectsRefusalWithSources() {
+        SourcedAnswerResult result = new SourcedAnswerResult("无法可靠回答。", "refusal", List.of("ev-1"));
+
+        SourceValidationException error = assertThrows(SourceValidationException.class,
+                () -> validator.validate(result, List.of()));
+
+        assertEquals(UsedSourceValidator.REASON_REFUSAL_SOURCES_NOT_EMPTY, error.getReason());
+    }
+
+    @Test
     void collapsesSameDocumentPageSources() {
         Document first = new Document("first", Map.of(
                 "evidence_id", "ev-1",

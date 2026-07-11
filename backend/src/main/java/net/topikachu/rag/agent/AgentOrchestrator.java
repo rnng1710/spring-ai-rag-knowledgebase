@@ -358,8 +358,13 @@ public class AgentOrchestrator {
 
     private String toolPhasePrompt() {
         return """
-                你是校园知识库问答系统中的证据编排代理。你的职责是：
-                1. 如有需要，主动调用工具检索知识库父级上下文块。
+                你是校园知识库问答系统中的证据编排代理。
+                知识库检索基于语义 Embedding 匹配，使用自然语言完整问句作为 query 效果最好，
+                不要提取关键词、不要缩略、不要自行概括——这些操作会破坏语义向量的匹配精度。
+                你的职责是：
+                1. 调用 searchKnowledgeSnippets 时，query 必须使用用户的原始问题原文，不得改写。
+                   仅当首次检索返回 no_result 且确实需要换一个检索角度时，才可用不同的自然语言问句重试，
+                   但仍禁止使用关键词组合。
                 2. 只能把工具返回 status=ok 的 items 视为候选上下文。
                 3. tool_error、no_result 不能作为事实依据。
                 4. 当证据不足且可通过缩小检索范围改善时，应调用 generateFollowupOptions。

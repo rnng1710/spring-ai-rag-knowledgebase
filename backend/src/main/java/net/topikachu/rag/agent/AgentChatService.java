@@ -4,26 +4,20 @@ import lombok.extern.slf4j.Slf4j;
 import net.topikachu.rag.auth.CurrentUserContext;
 import net.topikachu.rag.auth.SearchScope;
 import net.topikachu.rag.chat.history.ChatHistoryService;
-import net.topikachu.rag.evaluation.ContextNode;
-import net.topikachu.rag.evaluation.service.EvaluationPersistenceService;
 import net.topikachu.rag.observability.TracingSupport;
-import net.topikachu.rag.service.chat.ContextFormatter;
-import net.topikachu.rag.service.chat.ReactiveChatGateway;
-import net.topikachu.rag.service.chat.UsedSource;
-import net.topikachu.rag.service.chat.UsedSourceValidator;
-import net.topikachu.rag.service.chat.strategy.ChatModelStrategy;
-import net.topikachu.rag.service.chat.strategy.ChatModelStrategyFactory;
+import net.topikachu.rag.service.chat.GroundedTurnModule;
+import net.topikachu.rag.service.chat.SourceValidationException;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.document.Document;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -33,38 +27,26 @@ import java.util.Map;
 public class AgentChatService {
 
     private final AgentExecutor executor;
-    private final ChatModelStrategyFactory strategyFactory;
     private final ChatMemory chatMemory;
-    private final ReactiveChatGateway reactiveChatGateway;
     private final ConversationExecutionGuard conversationExecutionGuard;
     private final AgentTurnStateStore agentTurnStateStore;
-    private final EvaluationPersistenceService persistenceService;
     private final TracingSupport tracingSupport;
-    private final ContextFormatter contextFormatter;
-    private final UsedSourceValidator usedSourceValidator;
+    private final GroundedTurnModule groundedTurnModule;
     private final ChatHistoryService chatHistoryService;
 
     public AgentChatService(AgentExecutor executor,
-                            ChatModelStrategyFactory strategyFactory,
                             ChatMemory chatMemory,
-                            ReactiveChatGateway reactiveChatGateway,
                             ConversationExecutionGuard conversationExecutionGuard,
                             AgentTurnStateStore agentTurnStateStore,
-                            EvaluationPersistenceService persistenceService,
                             TracingSupport tracingSupport,
-                            ContextFormatter contextFormatter,
-                            UsedSourceValidator usedSourceValidator,
+                            GroundedTurnModule groundedTurnModule,
                             ChatHistoryService chatHistoryService) {
         this.executor = executor;
-        this.strategyFactory = strategyFactory;
         this.chatMemory = chatMemory;
-        this.reactiveChatGateway = reactiveChatGateway;
         this.conversationExecutionGuard = conversationExecutionGuard;
         this.agentTurnStateStore = agentTurnStateStore;
-        this.persistenceService = persistenceService;
         this.tracingSupport = tracingSupport;
-        this.contextFormatter = contextFormatter;
-        this.usedSourceValidator = usedSourceValidator;
+        this.groundedTurnModule = groundedTurnModule;
         this.chatHistoryService = chatHistoryService;
     }
 
@@ -112,52 +94,37 @@ public class AgentChatService {
                                             .onErrorResume(exp -> failRequest(msgId, "追问结果保存失败。"));
                                 }
 
-                                List<EvidenceSnapshot> sources = result.sources();
-                                List<UsedSource> usedSources = usedSourceValidator.fromDocuments(sources.stream()
-                                        .map(source -> org.springframework.ai.document.Document.builder()
+                                List<Document> candidateEvidence = result.candidateEvidence().stream()
+                                        .map(source -> Document.builder()
                                                 .id(source.id())
                                                 .text(source.text())
                                                 .metadata(source.metadataSnapshot())
                                                 .build())
-                                        .toList());
-                                ChatModelStrategy strategy = strategyFactory.getStrategy(modelId);
+                                        .toList();
+                                GroundedTurnModule.Command command = new GroundedTurnModule.Command(
+                                        userInput,
+                                        conversationId,
+                                        currentUserContext.userId(),
+                                        modelId,
+                                        "agent",
+                                        msgId,
+                                        traceId,
+                                        candidateEvidence,
+                                        result.parentContexts());
+                                Flux<ServerSentEvent<Object>> groundedEvents = Mono.defer(() -> groundedTurnModule.execute(command))
+                                        .doOnSuccess(ignored -> agentTurnStateStore.complete(msgId))
+                                        .flatMapMany(grounded -> {
+                                            Map<String, Object> sourcePayload = new LinkedHashMap<>();
+                                            sourcePayload.put("msgId", msgId);
+                                            sourcePayload.put("sources", grounded.usedSources());
+                                            return Flux.just(
+                                                    buildEvent("sources", sourcePayload),
+                                                    buildEvent("message", Map.of("msgId", msgId, "chunk", grounded.answer())),
+                                                    buildEvent("done", Map.of("msgId", msgId)));
+                                        })
+                                        .onErrorResume(error -> failRequest(msgId, groundedFailureMessage(error)));
 
-                                Map<String, Object> sourcePayload = new LinkedHashMap<>();
-                                sourcePayload.put("msgId", msgId);
-                                sourcePayload.put("sources", usedSources);
-                                Flux<ServerSentEvent<Object>> sourceEvent = Flux.just(buildEvent("sources", sourcePayload));
-
-                                StringBuilder finalAnswerBuffer = new StringBuilder();
-                                Flux<ServerSentEvent<Object>> answerStream = buildAnswerStream(
-                                                strategy,
-                                                userInput,
-                                                result,
-                                                sources)
-                                        .doOnNext(finalAnswerBuffer::append)
-                                        .map(content -> buildEvent("message", Map.of("msgId", msgId, "chunk", content)));
-
-                                Mono<ServerSentEvent<Object>> completion = Mono.defer(() -> {
-                                    String finalAnswer = finalAnswerBuffer.toString();
-                                    if (finalAnswer.isBlank()) {
-                                        return Mono.error(new IllegalStateException("Final answer is blank"));
-                                    }
-                                    persistenceService.saveConversation(
-                                            msgId, conversationId, currentUserContext.userId(),
-                                            userInput, finalAnswer, modelId, "agent",
-                                            toContextNodes(sources), usedSources, traceId)
-                                            .subscribe();
-                                    return addChatMemory(conversationId, List.of(
-                                                    new UserMessage(userInput),
-                                                    new AssistantMessage(finalAnswer)))
-                                            .then(chatHistoryService.saveTurn(
-                                                    conversationId, currentUserContext.userId(),
-                                                    userInput, finalAnswer, modelId, "agent", msgId))
-                                            .doOnSuccess(ignored -> agentTurnStateStore.complete(msgId))
-                                            .thenReturn(buildEvent("done", Map.of("msgId", msgId)));
-                                });
-
-                                return Flux.concat(traceEvents, sourceEvent, answerStream, completion.flux())
-                                        .onErrorResume(exp -> failRequest(msgId, "答案生成或持久化失败。"));
+                                return Flux.concat(traceEvents, groundedEvents);
                             })
                             .onErrorResume(exp -> failRequest(msgId, "工具阶段执行失败。"))
                             .doFinally(signalType -> {
@@ -165,32 +132,6 @@ public class AgentChatService {
                                 lease.close();
                             });
                 });
-    }
-
-    private Flux<String> buildAnswerStream(ChatModelStrategy strategy,
-                                           String userInput,
-                                           AgentExecutionResult result,
-                                           List<EvidenceSnapshot> sources) {
-        if (result.isRefusal()) {
-            return reactiveChatGateway.streamFinalAnswer(
-                    strategy.getChatClient(),
-                    buildRefusalPrompt(),
-                    Map.of(
-                            "draft", buildDraftSection(result.draft()),
-                            "revisionInstruction", buildRevisionInstruction(result.finalInstruction()),
-                            "userQuestion", userInput),
-                    userInput);
-        }
-
-        String context = contextFormatter.formatParentContexts(result.parentContexts());
-        return reactiveChatGateway.streamFinalAnswer(
-                strategy.getChatClient(),
-                buildAnswerPrompt(),
-                Map.of(
-                        "context", context,
-                        "draft", buildDraftSection(result.draft()),
-                        "revisionInstruction", buildRevisionInstruction(result.finalInstruction())),
-                userInput);
     }
 
     private Mono<Void> addChatMemory(String conversationId, List<Message> messages) {
@@ -222,71 +163,11 @@ public class AgentChatService {
                 buildEvent("done", Map.of("msgId", msgId)));
     }
 
-    private String buildAnswerPrompt() {
-        return """
-                你是一个专业的“校园智能知识库问答助手”。你的核心职责是基于提供的【知识库上下文】内容回答问题。
-
-                规则：
-                1. 完全、且仅依赖提供的【知识库上下文】回答问题。
-                2. 【回答草稿】和【修订要求】只作为写作提示，不得覆盖、扩展或替代上下文中的事实边界。
-                3. 如果草稿或修订要求与上下文冲突，必须以上下文为准。
-                4. 不得把未出现在上下文中的结论写入最终答案。
-                5. 若上下文不足，请明确说明根据已知文档无法确定。
-                6. 只有在上下文提供真实页码时，才能输出【第X页】；没有真实页码时，不得编造页码。
-                7. 每个事实段落或列表项末尾必须带引用，格式为《文件名》第X页；没有页码时使用《文件名》。
-                8. 每个事实段落或列表项最多展示 2 个引用。
-                9. 回答保持专业、直接、简洁，不输出内部思考过程。
-
-                ================ 知识库上下文 ================
-                {context}
-                ============================================
-
-                ================ 回答草稿 ================
-                {draft}
-                ==========================================
-
-                ================ 修订要求 ================
-                {revisionInstruction}
-                ==========================================
-                """;
-    }
-
-    private String buildRefusalPrompt() {
-        return """
-                你是一个专业的“校园智能知识库问答助手”。
-
-                当前任务不是给出事实结论，而是明确说明：根据当前知识库内容，无法可靠回答用户问题。
-
-                规则：
-                1. 仅基于【拒答草稿】和【修订要求】生成最终说明。
-                2. 不要补充上下文中不存在的新事实。
-                3. 不要再向用户提出新的追问选项。
-                4. 回答保持简洁、直接、专业。
-
-                ================ 用户问题 ================
-                {userQuestion}
-                =========================================
-
-                ================ 拒答草稿 ================
-                {draft}
-                =========================================
-
-                ================ 修订要求 ================
-                {revisionInstruction}
-                =========================================
-                """;
-    }
-
-    private String buildDraftSection(String draft) {
-        return (draft == null || draft.isBlank())
-                ? "无，直接基于上下文生成最终答案。"
-                : draft;
-    }
-
-    private String buildRevisionInstruction(String finalInstruction) {
-        return (finalInstruction == null || finalInstruction.isBlank())
-                ? "无，直接基于上下文生成最终答案。"
-                : finalInstruction;
+    private String groundedFailureMessage(Throwable error) {
+        if (error instanceof SourceValidationException sourceValidationException) {
+            return sourceValidationException.getUserMessage();
+        }
+        return "答案生成或持久化失败。";
     }
 
     private ServerSentEvent<Object> buildEvent(String event, Object data) {
@@ -296,14 +177,4 @@ public class AgentChatService {
                 .build();
     }
 
-    private List<ContextNode> toContextNodes(List<EvidenceSnapshot> sources) {
-        List<ContextNode> nodes = new ArrayList<>();
-        for (EvidenceSnapshot source : sources) {
-            String fileName = String.valueOf(source.metadataSnapshot().getOrDefault("file_name", "Unknown File"));
-            Object scoreObj = source.metadataSnapshot().get("score");
-            Double score = (scoreObj instanceof Number) ? ((Number) scoreObj).doubleValue() : 0.0;
-            nodes.add(new ContextNode(source.text(), fileName, score));
-        }
-        return nodes;
-    }
 }

@@ -4,9 +4,10 @@ import net.topikachu.rag.service.chat.ReactiveChatGateway;
 import net.topikachu.rag.service.chat.SourcedAnswerPrompts;
 import net.topikachu.rag.service.chat.SourcedAnswerResult;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
+import org.springframework.ai.chat.messages.Message;
 import reactor.core.publisher.Mono;
 
+import java.util.List;
 import java.util.Map;
 
 public interface ChatModelStrategy {
@@ -24,17 +25,14 @@ public interface ChatModelStrategy {
                                                         String context,
                                                         String userInput,
                                                         String conversationId,
-                                                        MessageChatMemoryAdvisor chatMemoryAdvisor) {
+                                                        List<Message> historyMessages) {
         return reactiveChatGateway.callStructured(
                 getChatClient(),
                 SourcedAnswerPrompts.jsonPrompt(),
                 Map.of("context", context),
+                historyMessages,
                 userInput,
                 conversationId,
-                chatMemoryAdvisor,
                 SourcedAnswerResult.class);
-    }
-
-    default void saveSourcedAnswerMemory(String conversationId, String userInput, String answer) {
     }
 }

@@ -5,7 +5,7 @@ import net.topikachu.rag.service.chat.ParentContextBlock;
 import java.util.List;
 
 public record AgentExecutionResult(
-        List<EvidenceSnapshot> sources,
+        List<EvidenceSnapshot> candidateEvidence,
         List<ParentContextBlock> parentContexts,
         List<AgentNote> notes,
         String followupPrompt,
@@ -17,9 +17,5 @@ public record AgentExecutionResult(
 ) {
     public boolean isFollowup() {
         return followupOptions != null && !followupOptions.isEmpty();
-    }
-
-    public boolean isRefusal() {
-        return "refusal".equalsIgnoreCase(answerMode);
     }
 }

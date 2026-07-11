@@ -16,19 +16,19 @@ import java.util.List;
 
 @Slf4j
 @Repository
-@ConditionalOnProperty(prefix = "rag.chat.memory", name = "serializer", havingValue = "legacy", matchIfMissing = true)
-public class MySqlRedisChatMemoryRepository implements ChatMemoryRepository {
+@ConditionalOnProperty(prefix = "rag.chat.memory", name = "serializer", havingValue = "json")
+public class JsonMySqlRedisChatMemoryRepository implements ChatMemoryRepository {
 
-    private static final String KEY_PREFIX = "chat-memory:snapshot:";
+    private static final String KEY_PREFIX = "chat-memory:json-snapshot:";
 
     private final ChatMemorySnapshotMapper snapshotMapper;
     private final RedisTemplate<String, byte[]> chatMemoryRedisTemplate;
-    private final ChatMessageSerializer serializer;
+    private final JsonChatMessageSerializer serializer;
     private final Duration cacheTtl;
 
-    public MySqlRedisChatMemoryRepository(ChatMemorySnapshotMapper snapshotMapper,
-                                          RedisTemplate<String, byte[]> chatMemoryRedisTemplate,
-                                          ChatMessageSerializer serializer) {
+    public JsonMySqlRedisChatMemoryRepository(ChatMemorySnapshotMapper snapshotMapper,
+                                              RedisTemplate<String, byte[]> chatMemoryRedisTemplate,
+                                              JsonChatMessageSerializer serializer) {
         this.snapshotMapper = snapshotMapper;
         this.chatMemoryRedisTemplate = chatMemoryRedisTemplate;
         this.serializer = serializer;
@@ -70,7 +70,7 @@ public class MySqlRedisChatMemoryRepository implements ChatMemoryRepository {
         entity.setConversationId(conversationId);
         entity.setMessageBlob(bytes);
         entity.setMessageCount(messages == null ? 0 : messages.size());
-        entity.setSerializer(ChatMessageSerializer.SERIALIZER_NAME);
+        entity.setSerializer(JsonChatMessageSerializer.SERIALIZER_NAME);
 
         if (snapshotMapper.selectById(conversationId) == null) {
             snapshotMapper.insert(entity);
@@ -91,7 +91,8 @@ public class MySqlRedisChatMemoryRepository implements ChatMemoryRepository {
         try {
             return serializer.deserializeMessages(bytes);
         } catch (RuntimeException ex) {
-            log.warn("Failed to deserialize chat memory snapshot. conversationId={}", conversationId, ex);
+            log.warn("Failed to deserialize JSON chat memory snapshot. conversationId={}, error={}",
+                    conversationId, ex.getMessage());
             return List.of();
         }
     }
@@ -100,7 +101,7 @@ public class MySqlRedisChatMemoryRepository implements ChatMemoryRepository {
         try {
             chatMemoryRedisTemplate.opsForValue().set(redisKey(conversationId), bytes, cacheTtl);
         } catch (RuntimeException ex) {
-            log.warn("Failed to refresh chat memory Redis cache. conversationId={}", conversationId, ex);
+            log.warn("Failed to refresh JSON chat memory Redis cache. conversationId={}", conversationId, ex);
         }
     }
 

@@ -9,6 +9,7 @@ import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.MessageType;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.ai.openai.api.ResponseFormat;
@@ -98,6 +99,36 @@ public class ReactiveChatGateway {
                         .subscribeOn(Schedulers.boundedElastic()));
     }
 
+    public <T> Mono<T> callStructured(ChatClient chatClient,
+                                      String systemText,
+                                      Map<String, Object> systemParams,
+                                      List<Message> historyMessages,
+                                      String userText,
+                                      String conversationId,
+                                      Class<T> responseType) {
+        List<Message> messages = new ArrayList<>(historyMessages == null ? List.of() : historyMessages);
+        messages.add(UserMessage.builder().text(userText).build());
+        return tracingSupport.traceMono("llm.chat_call_structured",
+                Map.of(
+                        "llm.conversation_id", conversationId == null ? "" : conversationId,
+                        "llm.prompt_chars", systemText == null ? 0 : systemText.length(),
+                        "llm.user_chars", userText == null ? 0 : userText.length()),
+                Mono.fromCallable(() -> buildPrompt(
+                                chatClient,
+                                systemText,
+                                systemParams,
+                                messages,
+                                List.of(),
+                                List.of(),
+                                Map.of())
+                                .options(jsonObjectOptions())
+                                .call()
+                                .content())
+                        .doOnNext(raw -> logRawStructuredResponse(conversationId, responseType, raw))
+                        .map(raw -> decodeStructuredResponse(raw, responseType, objectMapper))
+                        .subscribeOn(Schedulers.boundedElastic()));
+    }
+
     public Mono<SourcedAnswerResult> callSourcedAnswerTool(OpenAiApi openAiApi,
                                                            String model,
                                                            String systemText,
@@ -139,19 +170,6 @@ public class ReactiveChatGateway {
                                 .content())
                                 .doOnNext(raw -> logRawToolResponse(responseType, raw))
                                 .map(raw -> decodeStructuredResponse(raw, responseType, objectMapper)));
-    }
-
-    public Flux<String> streamFinalAnswer(ChatClient chatClient,
-                                          String systemText,
-                                          Map<String, Object> systemParams,
-                                          String userText) {
-        return tracingSupport.traceFlux("llm.chat_stream",
-                Map.of(
-                        "llm.prompt_chars", systemText == null ? 0 : systemText.length(),
-                        "llm.user_chars", userText == null ? 0 : userText.length()),
-                buildPrompt(chatClient, systemText, systemParams, userText, null, null)
-                        .stream()
-                        .content());
     }
 
     public Flux<String> stream(ChatClient chatClient,

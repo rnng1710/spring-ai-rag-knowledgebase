@@ -12,11 +12,13 @@ import org.commonmark.parser.Parser;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.transformer.splitter.TextSplitter;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
 
 @Component
+@ConditionalOnProperty(prefix = "rag.parser", name = "provider", havingValue = "legacy", matchIfMissing = true)
 @Slf4j
 public class MarkdownParseStrategy implements FileParseStrategy {
 

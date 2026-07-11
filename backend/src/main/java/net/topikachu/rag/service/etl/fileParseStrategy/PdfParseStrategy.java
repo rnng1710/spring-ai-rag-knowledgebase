@@ -12,12 +12,14 @@ import org.springframework.ai.reader.pdf.config.PdfDocumentReaderConfig;
 import org.springframework.ai.reader.tika.TikaDocumentReader;
 import org.springframework.ai.transformer.splitter.TextSplitter;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.nio.file.Path;
 import java.util.*;
 
 @Component
+@ConditionalOnProperty(prefix = "rag.parser", name = "provider", havingValue = "legacy", matchIfMissing = true)
 @Slf4j
 public class PdfParseStrategy implements FileParseStrategy {
 

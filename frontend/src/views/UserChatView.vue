@@ -118,7 +118,7 @@
                     </div>
 
                     <template v-if="msg.content">
-                        <MarkdownRenderer v-if="msg.role === 'assistant'" :content="msg.content" class="message-content" />
+                        <MarkdownRenderer v-if="msg.role === 'assistant'" :content="msg.content" :sources="msg.sources" @source-click="openSource" class="message-content" />
                         <div v-else class="message-content formatted-content">{{ msg.content }}</div>
                     </template>
                     <div v-else class="message-content thinking-content">{{ t("chat.thinking") }}</div>

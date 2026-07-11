@@ -78,9 +78,9 @@ public class AgentKnowledgeTools {
                 maxRepeatedQueryCount);
     }
 
-    @Tool(name = "searchKnowledgeSnippets", description = "在知识库中检索与问题相关的父级上下文块。tagsAnyOf 表示任一标签命中，不是全部标签同时命中。selectedEvidenceIds 只能选择返回的 citableEvidenceIds，不能选择 parentBlockId。")
+    @Tool(name = "searchKnowledgeSnippets", description = "在知识库中语义检索与问题相关的父级上下文块。query 使用用户的自然语言原始问题，不要提取关键词。tagsAnyOf 表示任一标签命中，不是全部标签同时命中。")
     public KnowledgeSearchResult searchKnowledgeSnippets(
-            @ToolParam(description = "检索请求，包含 query、tagsAnyOf、topK。")
+            @ToolParam(description = "检索请求。query 使用用户的原始自然语言问题原文，禁止改写或提取关键词。tagsAnyOf 可选过滤标签。topK 返回数量。")
             KnowledgeSearchRequest request) {
         executionContext.addNote(AgentStage.RETRIEVING, "tool_call", "调用工具 searchKnowledgeSnippets 检索知识库。");
 

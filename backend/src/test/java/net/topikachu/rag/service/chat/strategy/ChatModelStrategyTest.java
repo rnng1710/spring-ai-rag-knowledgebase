@@ -5,7 +5,8 @@ import net.topikachu.rag.service.chat.SourcedAnswerPrompts;
 import net.topikachu.rag.service.chat.SourcedAnswerResult;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
@@ -23,7 +24,7 @@ class ChatModelStrategyTest {
     void defaultSourcedAnswerUsesStructuredJsonCall() {
         ChatClient chatClient = mock(ChatClient.class);
         ReactiveChatGateway gateway = mock(ReactiveChatGateway.class);
-        MessageChatMemoryAdvisor advisor = mock(MessageChatMemoryAdvisor.class);
+        List<Message> history = List.of(new UserMessage("previous question"));
         SourcedAnswerResult expected = new SourcedAnswerResult("answer", "factual", List.of("ev-1"));
         ChatModelStrategy strategy = new ChatModelStrategy() {
             @Override
@@ -41,9 +42,9 @@ class ChatModelStrategyTest {
                 same(chatClient),
                 eq(SourcedAnswerPrompts.jsonPrompt()),
                 eq(Map.of("context", "ctx")),
+                same(history),
                 eq("question"),
                 eq("conversation-1"),
-                same(advisor),
                 eq(SourcedAnswerResult.class)))
                 .thenReturn(Mono.just(expected));
 
@@ -52,7 +53,7 @@ class ChatModelStrategyTest {
                         "ctx",
                         "question",
                         "conversation-1",
-                        advisor))
+                        history))
                 .expectNext(expected)
                 .verifyComplete();
     }
