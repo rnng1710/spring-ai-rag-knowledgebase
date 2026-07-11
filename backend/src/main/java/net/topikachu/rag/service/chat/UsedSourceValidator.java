@@ -20,6 +20,7 @@ public class UsedSourceValidator {
     public static final String REASON_EVIDENCE_ID_MISSING = "evidence_id_missing";
     public static final String REASON_EVIDENCE_ID_NOT_IN_CANDIDATES = "evidence_id_not_in_candidates";
     public static final String REASON_INVALID_ANSWER_TYPE = "invalid_answer_type";
+    public static final String REASON_REFUSAL_SOURCES_NOT_EMPTY = "refusal_sources_not_empty";
 
     // 验证 LLM 回答中的引用：确保每个 usedSources 中的 evidence_id 都在候选文档中存在
     // 验证失败 → 抛异常，回答被拒绝，返回"无法可靠生成带溯源的答案"
@@ -36,8 +37,11 @@ public class UsedSourceValidator {
             throw validationFailure(REASON_INVALID_ANSWER_TYPE, result, candidates);
         }
         List<String> requestedSources = result.usedSources() == null ? List.of() : result.usedSources();
-        // 3. refusal 不要求引用，直接通过
+        // 3. refusal 不允许带引用，防止静默丢弃模型返回的错误来源
         if (refusal) {
+            if (!requestedSources.isEmpty()) {
+                throw validationFailure(REASON_REFUSAL_SOURCES_NOT_EMPTY, result, candidates);
+            }
             return List.of();
         }
         // 4. factual 必须有至少一个引用
@@ -72,16 +76,7 @@ public class UsedSourceValidator {
         return collapseDisplayedSources(validated);
     }
 
-    public List<UsedSource> fromDocuments(List<Document> documents) {
-        if (documents == null || documents.isEmpty()) {
-            return List.of();
-        }
-        return collapseDisplayedSources(documents.stream()
-                .map(this::fromDocument)
-                .toList());
-    }
-
-    public UsedSource fromDocument(Document document) {
+    private UsedSource fromDocument(Document document) {
         Map<String, Object> metadata = document.getMetadata();
         return new UsedSource(
                 evidenceId(document),
@@ -119,11 +114,10 @@ public class UsedSourceValidator {
         return value == null ? null : value.toString();
     }
 
-    // 解析溯源展示位置：四级 fallback 链
+    // 解析溯源展示位置：source_location > page_start/page_end > parent_index
     // ① 显式 source_location（DOCX/MD 面包屑，如"学生纪律 > 开除程序"）
     // ② page_start/page_end（PDF 页码范围，如"3-4"或"5"）
     // ③ parent_index → "片段N"（无标题结构的非 PDF 文档）
-    // ④ page_number / page（最老数据的兜底兼容）
     private Object sourceLocation(Map<String, Object> metadata) {
         // ① 优先：语义化溯源路径（DOCX/MD 策略写入的面包屑）
         Object sourceLocation = metadata.get("source_location");
@@ -139,13 +133,16 @@ public class UsedSourceValidator {
             // 单页 → 直接返回页码，跨页 → 返回"起始-结束"范围
             return start.equals(end) ? pageStart : start + "-" + end;
         }
+        Object pageNumber = metadata.get("page_number");
+        if (pageNumber != null) {
+            return pageNumber;
+        }
         // ③ 再次：通用 parent_index → "片段N"
         Object parentIndex = metadata.get("parent_index");
         if (parentIndex != null) {
             return "片段" + parentIndex;
         }
-        // ④ 兜底：旧版元数据的 page_number / page
-        return metadata.getOrDefault("page_number", metadata.get("page"));
+        return null;
     }
 
     private String fileType(String fileName) {

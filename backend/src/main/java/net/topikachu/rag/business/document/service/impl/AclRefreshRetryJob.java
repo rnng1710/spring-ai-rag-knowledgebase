@@ -10,11 +10,11 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class AclRefreshRetryJob {
 
-    private final DocumentServiceImpl documentService;
+    private final AclRefreshManager aclRefreshManager;
 
     @Scheduled(fixedDelayString = "${rag.acl-refresh.retry.fixed-delay-ms:300000}")
     public void retryPendingTasks() {
-        int processed = documentService.processPendingAclRefreshTasks();
+        int processed = aclRefreshManager.processPendingTasks();
         if (processed > 0) {
             log.info("Processed {} ACL refresh task(s)", processed);
         }

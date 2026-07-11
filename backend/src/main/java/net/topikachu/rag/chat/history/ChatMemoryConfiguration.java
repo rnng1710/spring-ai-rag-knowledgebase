@@ -1,4 +1,4 @@
-package net.topikachu.rag.ai.memory;
+package net.topikachu.rag.chat.history;
 
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.memory.ChatMemoryRepository;
@@ -11,7 +11,7 @@ import org.springframework.data.redis.serializer.RedisSerializer;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
 
 @Configuration(proxyBeanMethods = false)
-public class RedisChatMemoryRepositoryConfiguration {
+public class ChatMemoryConfiguration {
 
 	@Bean
 	public RedisTemplate<String, byte[]> chatMemoryRedisTemplate(RedisConnectionFactory redisConnectionFactory) {

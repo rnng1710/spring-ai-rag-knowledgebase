@@ -3,16 +3,11 @@ package net.topikachu.rag.service.chat;
 import lombok.extern.slf4j.Slf4j;
 import net.topikachu.rag.auth.CurrentUserContext;
 import net.topikachu.rag.auth.SearchScope;
-import net.topikachu.rag.chat.history.ChatHistoryService;
 import net.topikachu.rag.evaluation.ContextNode;
 import net.topikachu.rag.evaluation.EvaluationConfig;
 import net.topikachu.rag.evaluation.EvaluationResultItem;
-import net.topikachu.rag.evaluation.service.EvaluationPersistenceService;
 import net.topikachu.rag.observability.TracingSupport;
-import net.topikachu.rag.service.chat.strategy.ChatModelStrategy;
 import net.topikachu.rag.service.chat.strategy.ChatModelStrategyFactory;
-import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
-import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
@@ -32,16 +27,11 @@ import java.util.Map;
 @Slf4j
 public class ChatService {
 
-    private final ChatMemory chatMemory;
     private final RetrievalPipeline retrievalPipeline;
-    private final ContextFormatter contextFormatter;
     private final ChatModelStrategyFactory strategyFactory;
     private final ReactiveChatGateway reactiveChatGateway;
     private final TracingSupport tracingSupport;
-    private final MessageChatMemoryAdvisor messageChatMemoryAdvisor;
-    private final EvaluationPersistenceService persistenceService;
-    private final UsedSourceValidator usedSourceValidator;
-    private final ChatHistoryService chatHistoryService;
+    private final GroundedTurnModule groundedTurnModule;
 
     @Value("${rag.retrieval.hybrid-topk:20}")
     private int hybridTopK;
@@ -52,26 +42,16 @@ public class ChatService {
     @Value("${rag.retrieval.max-context-chars:40000}")
     private int maxContextChars;
 
-    public ChatService(ChatMemory chatMemory,
-            RetrievalPipeline retrievalPipeline,
-            ContextFormatter contextFormatter,
+    public ChatService(RetrievalPipeline retrievalPipeline,
             ChatModelStrategyFactory strategyFactory,
             ReactiveChatGateway reactiveChatGateway,
             TracingSupport tracingSupport,
-            EvaluationPersistenceService persistenceService,
-            UsedSourceValidator usedSourceValidator,
-            ChatHistoryService chatHistoryService) {
-        this.chatMemory = chatMemory;
+            GroundedTurnModule groundedTurnModule) {
         this.retrievalPipeline = retrievalPipeline;
-        this.contextFormatter = contextFormatter;
         this.strategyFactory = strategyFactory;
         this.reactiveChatGateway = reactiveChatGateway;
         this.tracingSupport = tracingSupport;
-        this.persistenceService = persistenceService;
-        this.usedSourceValidator = usedSourceValidator;
-        this.chatHistoryService = chatHistoryService;
-
-        this.messageChatMemoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory).build();
+        this.groundedTurnModule = groundedTurnModule;
     }
 
     public record ChatStreamResponse(Flux<String> flux, List<UsedSource> usedSources) {
@@ -100,82 +80,17 @@ public class ChatService {
                                 "chat.mode", "rag",
                                 "chat.model_id", modelId == null ? "" : modelId,
                                 "chat.conversation_id", conversationId == null ? "" : conversationId))
-                .flatMap(retrievalResult -> tracingSupport.traceMono("rag.context_build",
-                                Map.of(
-                                        "chat.mode", "rag",
-                                        "chat.model_id", modelId == null ? "" : modelId,
-                                        "rag.source_count", retrievalResult.childCandidates().size(),
-                                        "rag.parent_context_count", retrievalResult.parentContexts().size(),
-                                        "rag.max_context_chars", maxContextChars),
-                                Mono.fromSupplier(() -> contextFormatter.formatParentContexts(retrievalResult.parentContexts())))
-                        .flatMap(context -> {
-                            ChatModelStrategy strategy = strategyFactory.getStrategy(modelId);
-                            return reactiveChatGateway.callStructured(
-                                            strategy.getChatClient(),
-                                            buildSourcedAnswerPrompt(),
-                                            Map.of("context", context),
-                                            userInput,
-                                            conversationId,
-                                            messageChatMemoryAdvisor,
-                                            SourcedAnswerResult.class)
-                                    .onErrorMap(this::toSourceValidationError)
-                                    .map(result -> {
-                                        List<UsedSource> usedSources = usedSourceValidator.validate(
-                                                result, retrievalResult.childCandidates());
-                                        String answer = result.answer();
-                                        persistenceService.saveConversation(
-                                                msgId, conversationId, currentUserContext.userId(),
-                                                userInput, answer, modelId, "rag",
-                                                toContextNodes(retrievalResult.childCandidates()), usedSources, traceId)
-                                                .subscribe();
-                                        chatHistoryService.saveTurn(
-                                                conversationId, currentUserContext.userId(),
-                                                userInput, answer, modelId, "rag", msgId)
-                                                .subscribe();
-                                        return new ChatStreamResponse(Flux.just(answer), usedSources);
-                                    });
-                        }));
-    }
-
-    static String buildSourcedAnswerPrompt() {
-        return """
-                你是一个专业的“校园智能知识库问答助手”。你必须基于【知识库上下文】回答。
-
-                必须遵守：
-                1. 只能使用【知识库上下文】中的事实，不得编造或外推。
-                2. 如果知识库证据不足，answerType 输出 refusal，answer 简洁说明无法可靠回答，usedSources 输出 []。
-                3. 如果输出事实性回答，answerType 输出 factual，usedSources 至少包含一个来源。
-                4. 每个事实段落或列表项末尾必须带引用，格式为《文件名》第 X 页；没有页码时用《文件名》片段 N。
-                5. 每个事实段落或列表项最多展示 2 个引用。
-                6. usedSources 必须是字符串数组；每个字符串都必须来自上下文“可引用 evidence_id”，不能创造新的 evidenceId。
-                7. 你必须且只能输出合法 JSON 对象，不要输出 Markdown 代码块或额外文字。
-                8. JSON 字段固定为 answer、answerType、usedSources。
-                9. answer 必填且不能为空；answerType 只能是 factual 或 refusal。
-                10. usedSources 只输出字符串数组，例如 ["docUuid:child:1:hash"]；不要输出对象数组，不要输出 docUuid、fileName、pageNumber、fileType，也不要输出 parent_block_id。
-                11. 输出必须是单个 JSON object；第一个字符是英文左花括号，最后一个字符是英文右花括号。
-                12. factual 时 answerType=factual，answer 中必须包含段落引用，usedSources 必须列出实际采用的 evidenceId。
-                13. refusal 时 answerType=refusal，answer 说明当前知识库没有足够信息，usedSources 必须是空数组。
-                14. 不要输出内部思考、解释、代码块或 JSON 之外的任何文字。
-
-                ================ 知识库上下文 ================
-                {context}
-                ============================================
-                """;
-    }
-
-    private Throwable toSourceValidationError(Throwable error) {
-        if (error instanceof SourceValidationException) {
-            return error;
-        }
-        if (error instanceof IllegalArgumentException
-                && error.getMessage() != null
-                && error.getMessage().contains("structured")) {
-            log.warn("Structured RAG response parse failed: {}. Cause: {}",
-                    error.getMessage(),
-                    error.getCause() != null ? error.getCause().getMessage() : "no cause");
-            return new SourceValidationException(UsedSourceValidator.UNRELIABLE_SOURCE_MESSAGE, "json_parse_failed");
-        }
-        return error;
+                .flatMap(retrievalResult -> groundedTurnModule.execute(new GroundedTurnModule.Command(
+                        userInput,
+                        conversationId,
+                        currentUserContext.userId(),
+                        modelId,
+                        "rag",
+                        msgId,
+                        traceId,
+                        retrievalResult.childCandidates(),
+                        retrievalResult.parentContexts())))
+                .map(result -> new ChatStreamResponse(Flux.just(result.answer()), result.usedSources()));
     }
 
     /**
@@ -298,14 +213,4 @@ public class ChatService {
         }
     }
 
-    private List<ContextNode> toContextNodes(List<Document> docs) {
-        List<ContextNode> nodes = new ArrayList<>();
-        for (Document doc : docs) {
-            String fileName = (String) doc.getMetadata().getOrDefault("file_name", "Unknown File");
-            Object scoreObj = doc.getMetadata().get("score");
-            Double score = (scoreObj instanceof Number) ? ((Number) scoreObj).doubleValue() : 0.0;
-            nodes.add(new ContextNode(doc.getText(), fileName, score));
-        }
-        return nodes;
-    }
 }

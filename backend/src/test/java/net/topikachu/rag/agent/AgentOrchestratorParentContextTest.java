@@ -44,7 +44,7 @@ class AgentOrchestratorParentContextTest {
                 context,
                 new AgentResolution("answer", "normal", "draft", "", List.of("ev-1")));
 
-        assertEquals(1, result.sources().size());
+        assertEquals(1, result.candidateEvidence().size());
         assertEquals(1, result.parentContexts().size());
         assertEquals(List.of("ev-1"), result.parentContexts().get(0).evidenceIds());
     }
@@ -60,7 +60,7 @@ class AgentOrchestratorParentContextTest {
                 new AgentResolution("answer", "normal", "draft", "", List.of("parent-1")));
 
         assertTrue(result.isFollowup());
-        assertTrue(result.sources().isEmpty());
+        assertTrue(result.candidateEvidence().isEmpty());
         assertTrue(result.parentContexts().isEmpty());
     }
 

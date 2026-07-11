@@ -6,6 +6,7 @@ import net.topikachu.rag.chat.history.entity.ChatMemorySnapshotEntity;
 import net.topikachu.rag.chat.history.mapper.ChatMemorySnapshotMapper;
 import org.springframework.ai.chat.memory.ChatMemoryRepository;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -15,6 +16,7 @@ import java.util.List;
 
 @Slf4j
 @Repository
+@ConditionalOnProperty(prefix = "rag.chat.memory", name = "serializer", havingValue = "legacy", matchIfMissing = true)
 public class MySqlRedisChatMemoryRepository implements ChatMemoryRepository {
 
     private static final String KEY_PREFIX = "chat-memory:snapshot:";

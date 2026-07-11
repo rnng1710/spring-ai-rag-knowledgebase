@@ -103,7 +103,11 @@ public class SecurityConfiguration {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration cfg = new CorsConfiguration();
         // 5174 为前端备用开发端口（如文档预览独立页面），生产环境需外部化此配置
-        cfg.setAllowedOrigins(List.of("http://localhost:5173", "http://localhost:5174"));
+        cfg.setAllowedOrigins(List.of(
+                "http://localhost:5173",
+                "http://localhost:5174",
+                "http://127.0.0.1:5173",
+                "http://127.0.0.1:5174"));
         cfg.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         cfg.setAllowCredentials(true);
         cfg.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Requested-With"));
