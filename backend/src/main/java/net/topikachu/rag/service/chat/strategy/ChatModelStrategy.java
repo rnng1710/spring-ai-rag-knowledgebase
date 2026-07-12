@@ -36,4 +36,25 @@ public interface ChatModelStrategy {
                 conversationId,
                 SourcedAnswerResult.class);
     }
+
+    default Mono<SourcedAnswerResult> callReviewedAnswer(ReactiveChatGateway reactiveChatGateway,
+                                                         String context,
+                                                         String userInput,
+                                                         String conversationId,
+                                                         List<Message> historyMessages,
+                                                         String reviewedCandidateAnswer,
+                                                         List<String> reviewedEvidenceIds,
+                                                         String repairInstruction) {
+        return reactiveChatGateway.callStructured(
+                getChatClient(),
+                SourcedAnswerPrompts.reviewedJsonPrompt(repairInstruction),
+                Map.of(
+                        "context", context,
+                        "reviewedCandidateAnswer", reviewedCandidateAnswer,
+                        "reviewedEvidenceIds", reviewedEvidenceIds),
+                historyMessages,
+                userInput,
+                conversationId,
+                SourcedAnswerResult.class);
+    }
 }

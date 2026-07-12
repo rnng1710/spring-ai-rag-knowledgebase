@@ -23,8 +23,7 @@ public record AgentRunState(
 		List<EvidenceSnapshot> evidence,
 		List<ParentContextBlock> parentContexts,
 		EvidenceGate.Assessment assessment,
-		List<AgentNote> notes,
-		boolean hasConversationContext
+		List<AgentNote> notes
 ) {
 
 	public AgentRunState {
@@ -50,11 +49,10 @@ public record AgentRunState(
 								  String conversationId,
 								  String msgId,
 								  String originalQuestion,
-								  CurrentUserContext currentUser,
-								  SearchScope searchScope,
-								  String modelId,
-								  Budget budget,
-								  boolean hasConversationContext) {
+				CurrentUserContext currentUser,
+				SearchScope searchScope,
+				String modelId,
+				Budget budget) {
 		return new AgentRunState(
 				runId,
 				conversationId,
@@ -70,8 +68,7 @@ public record AgentRunState(
 				List.of(),
 				List.of(),
 				null,
-				List.of(),
-				hasConversationContext);
+				List.of());
 	}
 
 	public AgentRunState transition(Stage nextStage, String kind, String text) {
@@ -138,8 +135,7 @@ public record AgentRunState(
 				nextEvidence,
 				nextParentContexts,
 				nextAssessment,
-				nextNotes,
-				hasConversationContext);
+				nextNotes);
 	}
 
 	private static AgentStage toWireStage(Stage stage) {
@@ -148,7 +144,6 @@ public record AgentRunState(
 			case RETRIEVE -> AgentStage.RETRIEVING;
 			case ASSESS, VERIFY -> AgentStage.REVIEWING;
 			case COMPOSE -> AgentStage.DRAFTING;
-			case CLARIFY -> AgentStage.FOLLOWUP;
 			case REFUSE -> AgentStage.GENERATING_FINAL;
 			case COMPLETE -> AgentStage.DONE;
 		};
@@ -159,7 +154,6 @@ public record AgentRunState(
 		RETRIEVE,
 		ASSESS,
 		COMPOSE,
-		CLARIFY,
 		REFUSE,
 		VERIFY,
 		COMPLETE
@@ -168,13 +162,13 @@ public record AgentRunState(
 	public record Budget(int maxRetrievalRounds, int maxSubqueries, int maxAnswerRepairs) {
 
 		public Budget {
-			if (maxRetrievalRounds != 2 || maxSubqueries != 4 || maxAnswerRepairs != 1) {
-				throw new IllegalArgumentException("Agent budget is fixed at 2 retrieval rounds, 4 queries and 1 repair");
+			if (maxRetrievalRounds != 3 || maxSubqueries != 4 || maxAnswerRepairs != 1) {
+				throw new IllegalArgumentException("Agent budget is fixed at 3 retrieval rounds, 4 queries and 1 repair");
 			}
 		}
 
 		public static Budget standard() {
-			return new Budget(2, 4, 1);
+			return new Budget(3, 4, 1);
 		}
 	}
 

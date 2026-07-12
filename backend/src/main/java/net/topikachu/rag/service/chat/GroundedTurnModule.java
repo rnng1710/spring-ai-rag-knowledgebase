@@ -16,8 +16,10 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 @Component
 @Slf4j
@@ -74,13 +76,23 @@ public final class GroundedTurnModule {
                                            List<Message> history,
                                            int repairCount,
                                            String repairInstruction) {
-        return Mono.defer(() -> strategy.callSourcedAnswer(
-                        reactiveChatGateway,
-                        context,
-                        command.userInput(),
-                        command.conversationId(),
-                        history,
-                        repairInstruction))
+        return Mono.defer(() -> command.answerPolicy() == AnswerPolicy.REVIEWED_GROUNDED
+                        ? strategy.callReviewedAnswer(
+                                reactiveChatGateway,
+                                context,
+                                command.userInput(),
+                                command.conversationId(),
+                                history,
+                                command.reviewedCandidateAnswer(),
+                                command.reviewedEvidenceIds(),
+                                repairInstruction)
+                        : strategy.callSourcedAnswer(
+                                reactiveChatGateway,
+                                context,
+                                command.userInput(),
+                                command.conversationId(),
+                                history,
+                                repairInstruction))
                 .onErrorMap(this::toSourceValidationError)
                 .flatMap(answer -> validatedResult(answer, command, repairCount))
                 .onErrorResume(SourceValidationException.class, error -> {
@@ -95,11 +107,36 @@ public final class GroundedTurnModule {
     }
 
     private Mono<Result> validatedResult(SourcedAnswerResult answer, Command command, int repairCount) {
-        return Mono.fromCallable(() -> new Result(
-                answer.answer(),
-                answer.answerType(),
-                usedSourceValidator.validate(answer, command.candidateEvidence()),
-                repairCount));
+        return Mono.fromCallable(() -> {
+            validateReviewedAnswer(answer, command);
+            return new Result(
+                    answer.answer(),
+                    answer.answerType(),
+                    usedSourceValidator.validate(answer, command.candidateEvidence()),
+                    repairCount);
+        });
+    }
+
+    private void validateReviewedAnswer(SourcedAnswerResult answer, Command command) {
+        if (command.answerPolicy() != AnswerPolicy.REVIEWED_GROUNDED) {
+            return;
+        }
+        if (answer == null || !"factual".equalsIgnoreCase(answer.answerType())) {
+            throw new SourceValidationException(
+                    UsedSourceValidator.UNRELIABLE_SOURCE_MESSAGE,
+                    UsedSourceValidator.REASON_REVIEWED_ANSWER_REFUSED);
+        }
+        Set<String> usedEvidenceIds = new LinkedHashSet<>();
+        for (String evidenceId : answer.usedSources() == null ? List.<String>of() : answer.usedSources()) {
+            if (evidenceId != null && !evidenceId.isBlank()) {
+                usedEvidenceIds.add(evidenceId.strip());
+            }
+        }
+        if (!usedEvidenceIds.containsAll(command.reviewedEvidenceIds())) {
+            throw new SourceValidationException(
+                    UsedSourceValidator.UNRELIABLE_SOURCE_MESSAGE,
+                    UsedSourceValidator.REASON_REQUIRED_EVIDENCE_NOT_USED);
+        }
     }
 
     private List<String> allowedEvidenceIds(List<Document> candidates) {
@@ -196,20 +233,63 @@ public final class GroundedTurnModule {
             List<Document> candidateEvidence,
             List<ParentContextBlock> parentContexts,
             AnswerPolicy answerPolicy,
-            int maxAnswerRepairs) {
+            int maxAnswerRepairs,
+            String reviewedCandidateAnswer,
+            List<String> reviewedEvidenceIds) {
 
         public Command {
             candidateEvidence = candidateEvidence == null ? List.of() : List.copyOf(candidateEvidence);
             parentContexts = parentContexts == null ? List.of() : List.copyOf(parentContexts);
             Objects.requireNonNull(answerPolicy, "answerPolicy must not be null");
+            reviewedCandidateAnswer = reviewedCandidateAnswer == null ? "" : reviewedCandidateAnswer.strip();
+            reviewedEvidenceIds = reviewedEvidenceIds == null
+                    ? List.of()
+                    : reviewedEvidenceIds.stream()
+                            .filter(Objects::nonNull)
+                            .map(String::strip)
+                            .filter(id -> !id.isEmpty())
+                            .distinct()
+                            .toList();
             if (maxAnswerRepairs < 0 || maxAnswerRepairs > 1) {
                 throw new IllegalArgumentException("maxAnswerRepairs must be 0 or 1");
             }
+            if (answerPolicy == AnswerPolicy.REVIEWED_GROUNDED
+                    && (reviewedCandidateAnswer.isEmpty() || reviewedEvidenceIds.isEmpty())) {
+                throw new IllegalArgumentException("Reviewed answer and evidence ids are required");
+            }
+        }
+
+        public Command(String userInput,
+                       String conversationId,
+                       String userId,
+                       String modelId,
+                       String mode,
+                       String msgId,
+                       String traceId,
+                       List<Document> candidateEvidence,
+                       List<ParentContextBlock> parentContexts,
+                       AnswerPolicy answerPolicy,
+                       int maxAnswerRepairs) {
+            this(
+                    userInput,
+                    conversationId,
+                    userId,
+                    modelId,
+                    mode,
+                    msgId,
+                    traceId,
+                    candidateEvidence,
+                    parentContexts,
+                    answerPolicy,
+                    maxAnswerRepairs,
+                    "",
+                    List.of());
         }
     }
 
     public enum AnswerPolicy {
         GROUNDED,
+        REVIEWED_GROUNDED,
         KNOWLEDGE_REFUSAL
     }
 

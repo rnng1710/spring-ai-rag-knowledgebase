@@ -284,13 +284,10 @@ rag.agent.enable=true
 rag.agent.timeout-ms=12000
 rag.agent.max-evidence-count=12
 rag.agent.default-mode=rag
-rag.agent.evidence.min-rerank-score=<校准生成的 T>
-rag.agent.evidence.min-supporting-evidence=<校准生成的 N>
-rag.agent.evidence.min-top-score-gap=<校准生成的 G>
+rag.agent.debug-log-enabled=false
 ```
 
-Agent 模式在 T/N/G 缺失时会安全拒绝启动工作流。连接项目 Milvus、BGE reranker 和 RAGAS 后，在 `backend/` 下运行
-`mvn -Drag.agent.calibration.enabled=true -Dtest=EvidenceGateCalibrationRunner test`；只有 52 题均成功且规则 precision ≥ 95% 时才会在 `target/evidence-gate-calibration.json` 生成逐题报告与配置值。
+`rag.agent.debug-log-enabled=true` 会在控制台打印完整问题、切片、分数、父块、LLM evidence 和路由结果，仅用于诊断。
 
 ### ETL
 
@@ -652,13 +649,10 @@ rag.agent.enable=true
 rag.agent.timeout-ms=12000
 rag.agent.max-evidence-count=12
 rag.agent.default-mode=rag
-rag.agent.evidence.min-rerank-score=<calibrated T>
-rag.agent.evidence.min-supporting-evidence=<calibrated N>
-rag.agent.evidence.min-top-score-gap=<calibrated G>
+rag.agent.debug-log-enabled=false
 ```
 
-Agent mode fails closed while T/N/G are absent. With the project Milvus, BGE reranker, and RAGAS services available, run
-`mvn -Drag.agent.calibration.enabled=true -Dtest=EvidenceGateCalibrationRunner test` from `backend/`; it writes `target/evidence-gate-calibration.json` only when all 52 cases succeed and the selected rule reaches at least 95% precision.
+Set `rag.agent.debug-log-enabled=true` only while diagnosing; it logs full questions, chunks, scores, parent contexts, LLM evidence, and routing decisions.
 
 ### ETL
 

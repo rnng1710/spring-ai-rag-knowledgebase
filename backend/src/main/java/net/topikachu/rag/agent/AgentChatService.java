@@ -3,15 +3,10 @@ package net.topikachu.rag.agent;
 import lombok.extern.slf4j.Slf4j;
 import net.topikachu.rag.auth.CurrentUserContext;
 import net.topikachu.rag.auth.SearchScope;
-import net.topikachu.rag.chat.history.ChatHistoryService;
 import net.topikachu.rag.observability.TracingSupport;
 import net.topikachu.rag.service.chat.GroundedTurnModule;
 import net.topikachu.rag.service.chat.RetrievalException;
 import net.topikachu.rag.service.chat.SourceValidationException;
-import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -27,24 +22,18 @@ import java.util.Map;
 public class AgentChatService {
 
     private final AdaptiveEvidenceWorkflow workflow;
-    private final ChatMemory chatMemory;
     private final ConversationExecutionGuard conversationExecutionGuard;
     private final AgentTurnStateStore agentTurnStateStore;
     private final TracingSupport tracingSupport;
-    private final ChatHistoryService chatHistoryService;
 
     public AgentChatService(AdaptiveEvidenceWorkflow workflow,
-                            ChatMemory chatMemory,
                             ConversationExecutionGuard conversationExecutionGuard,
                             AgentTurnStateStore agentTurnStateStore,
-                            TracingSupport tracingSupport,
-                            ChatHistoryService chatHistoryService) {
+                            TracingSupport tracingSupport) {
         this.workflow = workflow;
-        this.chatMemory = chatMemory;
         this.conversationExecutionGuard = conversationExecutionGuard;
         this.agentTurnStateStore = agentTurnStateStore;
         this.tracingSupport = tracingSupport;
-        this.chatHistoryService = chatHistoryService;
     }
 
     public Flux<ServerSentEvent<Object>> streamEvents(String userInput,
@@ -77,28 +66,6 @@ public class AgentChatService {
                     return workflow.execute(request)
                             .flatMapMany(outcome -> {
                                 Flux<ServerSentEvent<Object>> traceEvents = buildTraceEvents(outcome.notes(), msgId);
-                                if (outcome instanceof AdaptiveEvidenceWorkflow.Clarify clarify) {
-                                    ServerSentEvent<Object> followupEvent = buildEvent("followup",
-                                            Map.of(
-                                                    "msgId", msgId,
-                                                    "text", clarify.prompt(),
-                                                    "options", clarify.options()));
-                                    Mono<ServerSentEvent<Object>> completion = addChatMemory(conversationId, List.of(
-                                                    new UserMessage(userInput),
-                                                    new AssistantMessage(clarify.prompt())))
-                                            .then(chatHistoryService.saveTurn(
-                                                    conversationId, currentUserContext.userId(),
-                                                    userInput, clarify.prompt(), modelId, "agent", msgId))
-                                            .doOnSuccess(ignored -> agentTurnStateStore.complete(msgId))
-                                            .thenReturn(buildEvent("done", Map.of("msgId", msgId)));
-
-                                    return Flux.concat(
-                                                    traceEvents,
-                                                    Flux.just(followupEvent),
-                                                    completion.flux())
-                                            .onErrorResume(exp -> failRequest(msgId, "追问结果保存失败。"));
-                                }
-
                                 GroundedTurnModule.Result result;
                                 if (outcome instanceof AdaptiveEvidenceWorkflow.Answer answer) {
                                     result = answer.result();
@@ -127,12 +94,6 @@ public class AgentChatService {
                                 lease.close();
                             });
                 });
-    }
-
-    private Mono<Void> addChatMemory(String conversationId, List<Message> messages) {
-        return Mono.fromRunnable(() -> chatMemory.add(conversationId, messages))
-                .subscribeOn(Schedulers.boundedElastic())
-                .then();
     }
 
     private Flux<ServerSentEvent<Object>> buildTraceEvents(List<AgentNote> notes, String msgId) {

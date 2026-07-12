@@ -62,6 +62,26 @@ public final class SourcedAnswerPrompts {
         return appendRepairInstruction(toolPrompt(), repairInstruction);
     }
 
+    public static String reviewedJsonPrompt(String repairInstruction) {
+        return appendRepairInstruction(reviewedGroundingRules() + """
+                9. 你必须且只能输出合法 JSON 对象，字段固定为 answer、answerType、usedSources。
+                10. answerType 必须为 factual，不得输出 refusal。
+                11. answer 必须保留候选答案的事实含义，只能调整措辞、结构并补充引用，不得增加、删除或重新判断事实。
+                12. usedSources 必须包含全部“审查器选定 evidence_id”，不得使用其他 evidence_id。
+                13. 输出必须是单个 JSON object，不要输出 Markdown 代码块、内部思考或额外文字。
+                """ + CONTEXT, repairInstruction);
+    }
+
+    public static String reviewedToolPrompt(String repairInstruction) {
+        return appendRepairInstruction(reviewedGroundingRules() + """
+                9. 你必须调用 submitSourcedAnswer 工具提交最终结果。
+                10. answerType 必须为 factual，不得输出 refusal。
+                11. answer 必须保留候选答案的事实含义，只能调整措辞、结构并补充引用，不得增加、删除或重新判断事实。
+                12. usedSources 必须包含全部“审查器选定 evidence_id”，不得使用其他 evidence_id。
+                13. 不要直接输出普通文本、内部思考或代码块。
+                """ + CONTEXT, repairInstruction);
+    }
+
     public static String repairInstruction(String reason, List<String> allowedEvidenceIds) {
         return """
 
@@ -70,6 +90,27 @@ public final class SourcedAnswerPrompts {
                 allowed_evidence_ids: %s
                 ============================================
                 """.formatted(reason, allowedEvidenceIds == null ? List.of() : allowedEvidenceIds);
+    }
+
+    private static String reviewedGroundingRules() {
+        return """
+                你是最终答案编辑器。上游审查器已经确认当前问题可以回答，并给出了候选答案和支持证据；你无权重新判断是否可回答。
+
+                ================ 审查器决策 ================
+                候选答案：{reviewedCandidateAnswer}
+                审查器选定 evidence_id：{reviewedEvidenceIds}
+                ============================================
+
+                必须遵守：
+                1. 只能基于候选答案和【知识库上下文】完成最终措辞，不得使用外部知识或会话历史补充事实。
+                2. 不得拒答、降级、质疑或推翻审查器结论。
+                3. 每个事实段落或列表项末尾必须带引用，格式为《文件名》第 X 页；没有页码时用《文件名》片段 N。
+                4. 每个事实段落或列表项最多展示 2 个引用。
+                5. usedSources 必须是字符串数组，且只能使用“审查器选定 evidence_id”。
+                6. usedSources 必须覆盖全部“审查器选定 evidence_id”。
+                7. answer 必填且不能为空。
+                8. 会话历史只用于理解语言风格，不属于事实来源。
+                """;
     }
 
     private static String appendRepairInstruction(String prompt, String repairInstruction) {
