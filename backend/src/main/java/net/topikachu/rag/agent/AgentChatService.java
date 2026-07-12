@@ -11,6 +11,7 @@ import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Schedulers;
 
 import java.util.LinkedHashMap;
@@ -55,6 +56,22 @@ public class AgentChatService {
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMapMany(lease -> {
                     agentTurnStateStore.createPending(msgId, conversationId, userInput);
+                    Sinks.Many<AgentNote> noteSink = Sinks.many().multicast().onBackpressureBuffer();
+
+                    Flux<ServerSentEvent<Object>> noteEvents = noteSink.asFlux()
+                            .concatMap(note -> Flux.just(
+                                    buildEvent("agent_stage", Map.of(
+                                            "msgId", msgId,
+                                            "stage", note.stage().wireValue(),
+                                            "sequence", note.sequence())),
+                                    buildEvent("agent_note", Map.of(
+                                            "msgId", msgId,
+                                            "stage", note.stage().wireValue(),
+                                            "kind", note.kind(),
+                                            "text", note.text(),
+                                            "timestamp", note.timestamp(),
+                                            "sequence", note.sequence()))));
+
                     AdaptiveEvidenceWorkflow.AgentRequest request = new AdaptiveEvidenceWorkflow.AgentRequest(
                             userInput,
                             conversationId,
@@ -62,10 +79,11 @@ public class AgentChatService {
                             currentUserContext,
                             searchScope,
                             modelId,
-                            traceId);
-                    return workflow.execute(request)
+                            traceId,
+                            note -> noteSink.tryEmitNext(note));
+                    Flux<ServerSentEvent<Object>> outcomeEvents = workflow.execute(request)
+                            .doFinally(sig -> noteSink.tryEmitComplete())
                             .flatMapMany(outcome -> {
-                                Flux<ServerSentEvent<Object>> traceEvents = buildTraceEvents(outcome.notes(), msgId);
                                 GroundedTurnModule.Result result;
                                 if (outcome instanceof AdaptiveEvidenceWorkflow.Answer answer) {
                                     result = answer.result();
@@ -81,14 +99,14 @@ public class AgentChatService {
                                 Map<String, Object> sourcePayload = new LinkedHashMap<>();
                                 sourcePayload.put("msgId", msgId);
                                 sourcePayload.put("sources", result.usedSources());
-                                return Flux.concat(
-                                        traceEvents,
-                                        Flux.just(
+                                return Flux.just(
                                                 buildEvent("sources", sourcePayload),
                                                 buildEvent("message", Map.of("msgId", msgId, "chunk", result.answer())),
-                                                buildEvent("done", Map.of("msgId", msgId))));
+                                                buildEvent("done", Map.of("msgId", msgId)));
                             })
-                            .onErrorResume(error -> failRequest(msgId, workflowFailureMessage(error)))
+                            .onErrorResume(error -> failRequest(msgId, workflowFailureMessage(error)));
+
+                    return Flux.merge(noteEvents, outcomeEvents)
                             .doFinally(signalType -> {
                                 agentTurnStateStore.cleanupExpired();
                                 lease.close();

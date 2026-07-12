@@ -309,7 +309,7 @@ class AdaptiveEvidenceWorkflowTest {
 
 	private AdaptiveEvidenceWorkflow.AgentRequest request() {
 		return new AdaptiveEvidenceWorkflow.AgentRequest(
-				QUESTION, CONVERSATION_ID, "message-1", USER, SCOPE, "model-1", "trace-1");
+				QUESTION, CONVERSATION_ID, "message-1", USER, SCOPE, "model-1", "trace-1", note -> {});
 	}
 
 	private GroundedTurnModule.Result result() {
