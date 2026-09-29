@@ -16,8 +16,10 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 @Component
 @Slf4j
@@ -49,23 +51,104 @@ public final class GroundedTurnModule {
 
     public Mono<Result> execute(Command command) {
         Objects.requireNonNull(command, "command must not be null");
+        if (command.answerPolicy() == AnswerPolicy.KNOWLEDGE_REFUSAL) {
+            return validatedResult(
+                            new SourcedAnswerResult(
+                                    UsedSourceValidator.UNRELIABLE_SOURCE_MESSAGE,
+                                    "refusal",
+                                    List.of()),
+                            command,
+                            0)
+                    .flatMap(result -> commit(command, result).thenReturn(result));
+        }
         return loadHistory(command.conversationId())
                 .flatMap(history -> {
                     String context = contextFormatter.formatParentContexts(command.parentContexts());
                     ChatModelStrategy strategy = strategyFactory.getStrategy(command.modelId());
-                    return strategy.callSourcedAnswer(
-                            reactiveChatGateway,
-                            context,
-                            command.userInput(),
-                            command.conversationId(),
-                            history);
+                    return generateValidated(command, strategy, context, history, 0, null);
                 })
-                .onErrorMap(this::toSourceValidationError)
-                .map(answer -> new Result(
-                        answer.answer(),
-                        answer.answerType(),
-                        usedSourceValidator.validate(answer, command.candidateEvidence())))
                 .flatMap(result -> commit(command, result).thenReturn(result));
+    }
+
+    private Mono<Result> generateValidated(Command command,
+                                           ChatModelStrategy strategy,
+                                           String context,
+                                           List<Message> history,
+                                           int repairCount,
+                                           String repairInstruction) {
+        return Mono.defer(() -> command.answerPolicy() == AnswerPolicy.REVIEWED_GROUNDED
+                        ? strategy.callReviewedAnswer(
+                                reactiveChatGateway,
+                                context,
+                                command.userInput(),
+                                command.conversationId(),
+                                history,
+                                command.reviewedCandidateAnswer(),
+                                command.reviewedEvidenceIds(),
+                                repairInstruction)
+                        : strategy.callSourcedAnswer(
+                                reactiveChatGateway,
+                                context,
+                                command.userInput(),
+                                command.conversationId(),
+                                history,
+                                repairInstruction))
+                .onErrorMap(this::toSourceValidationError)
+                .flatMap(answer -> validatedResult(answer, command, repairCount))
+                .onErrorResume(SourceValidationException.class, error -> {
+                    if (repairCount > 0 || command.maxAnswerRepairs() <= 0) {
+                        return Mono.error(error);
+                    }
+                    String instruction = SourcedAnswerPrompts.repairInstruction(
+                            error.getReason(),
+                            allowedEvidenceIds(command.candidateEvidence()));
+                    return generateValidated(command, strategy, context, history, 1, instruction);
+                });
+    }
+
+    private Mono<Result> validatedResult(SourcedAnswerResult answer, Command command, int repairCount) {
+        return Mono.fromCallable(() -> {
+            validateReviewedAnswer(answer, command);
+            return new Result(
+                    answer.answer(),
+                    answer.answerType(),
+                    usedSourceValidator.validate(answer, command.candidateEvidence()),
+                    repairCount);
+        });
+    }
+
+    private void validateReviewedAnswer(SourcedAnswerResult answer, Command command) {
+        if (command.answerPolicy() != AnswerPolicy.REVIEWED_GROUNDED) {
+            return;
+        }
+        if (answer == null || !"factual".equalsIgnoreCase(answer.answerType())) {
+            throw new SourceValidationException(
+                    UsedSourceValidator.UNRELIABLE_SOURCE_MESSAGE,
+                    UsedSourceValidator.REASON_REVIEWED_ANSWER_REFUSED);
+        }
+        Set<String> usedEvidenceIds = new LinkedHashSet<>();
+        for (String evidenceId : answer.usedSources() == null ? List.<String>of() : answer.usedSources()) {
+            if (evidenceId != null && !evidenceId.isBlank()) {
+                usedEvidenceIds.add(evidenceId.strip());
+            }
+        }
+        if (!usedEvidenceIds.containsAll(command.reviewedEvidenceIds())) {
+            throw new SourceValidationException(
+                    UsedSourceValidator.UNRELIABLE_SOURCE_MESSAGE,
+                    UsedSourceValidator.REASON_REQUIRED_EVIDENCE_NOT_USED);
+        }
+    }
+
+    private List<String> allowedEvidenceIds(List<Document> candidates) {
+        return candidates.stream()
+                .map(candidate -> {
+                    Object evidenceId = candidate.getMetadata().get("evidence_id");
+                    return evidenceId == null ? candidate.getId() : evidenceId.toString().trim();
+                })
+                .filter(Objects::nonNull)
+                .filter(id -> !id.isBlank())
+                .distinct()
+                .toList();
     }
 
     private Mono<List<Message>> loadHistory(String conversationId) {
@@ -117,9 +200,7 @@ public final class GroundedTurnModule {
         if (error instanceof SourceValidationException) {
             return error;
         }
-        if (error instanceof IllegalArgumentException
-                && error.getMessage() != null
-                && error.getMessage().contains("structured")) {
+        if (error instanceof StructuredResponseException) {
             log.warn("Structured grounded answer parse failed: {}. Cause: {}",
                     error.getMessage(),
                     error.getCause() == null ? "no cause" : error.getCause().getMessage());
@@ -150,15 +231,69 @@ public final class GroundedTurnModule {
             String msgId,
             String traceId,
             List<Document> candidateEvidence,
-            List<ParentContextBlock> parentContexts) {
+            List<ParentContextBlock> parentContexts,
+            AnswerPolicy answerPolicy,
+            int maxAnswerRepairs,
+            String reviewedCandidateAnswer,
+            List<String> reviewedEvidenceIds) {
 
         public Command {
             candidateEvidence = candidateEvidence == null ? List.of() : List.copyOf(candidateEvidence);
             parentContexts = parentContexts == null ? List.of() : List.copyOf(parentContexts);
+            Objects.requireNonNull(answerPolicy, "answerPolicy must not be null");
+            reviewedCandidateAnswer = reviewedCandidateAnswer == null ? "" : reviewedCandidateAnswer.strip();
+            reviewedEvidenceIds = reviewedEvidenceIds == null
+                    ? List.of()
+                    : reviewedEvidenceIds.stream()
+                            .filter(Objects::nonNull)
+                            .map(String::strip)
+                            .filter(id -> !id.isEmpty())
+                            .distinct()
+                            .toList();
+            if (maxAnswerRepairs < 0 || maxAnswerRepairs > 1) {
+                throw new IllegalArgumentException("maxAnswerRepairs must be 0 or 1");
+            }
+            if (answerPolicy == AnswerPolicy.REVIEWED_GROUNDED
+                    && (reviewedCandidateAnswer.isEmpty() || reviewedEvidenceIds.isEmpty())) {
+                throw new IllegalArgumentException("Reviewed answer and evidence ids are required");
+            }
+        }
+
+        public Command(String userInput,
+                       String conversationId,
+                       String userId,
+                       String modelId,
+                       String mode,
+                       String msgId,
+                       String traceId,
+                       List<Document> candidateEvidence,
+                       List<ParentContextBlock> parentContexts,
+                       AnswerPolicy answerPolicy,
+                       int maxAnswerRepairs) {
+            this(
+                    userInput,
+                    conversationId,
+                    userId,
+                    modelId,
+                    mode,
+                    msgId,
+                    traceId,
+                    candidateEvidence,
+                    parentContexts,
+                    answerPolicy,
+                    maxAnswerRepairs,
+                    "",
+                    List.of());
         }
     }
 
-    public record Result(String answer, String answerType, List<UsedSource> usedSources) {
+    public enum AnswerPolicy {
+        GROUNDED,
+        REVIEWED_GROUNDED,
+        KNOWLEDGE_REFUSAL
+    }
+
+    public record Result(String answer, String answerType, List<UsedSource> usedSources, int repairCount) {
 
         public Result {
             usedSources = usedSources == null ? List.of() : List.copyOf(usedSources);

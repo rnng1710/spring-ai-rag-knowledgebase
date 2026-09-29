@@ -85,12 +85,34 @@ public class DeepSeekChatModelStrategy implements ChatModelStrategy {
                                                        String context,
                                                        String userInput,
                                                        String conversationId,
-                                                       List<Message> historyMessages) {
+                                                       List<Message> historyMessages,
+                                                       String repairInstruction) {
         return reactiveChatGateway.callSourcedAnswerTool(
                 openAiApi,
                 model,
-                SourcedAnswerPrompts.toolPrompt(),
+                SourcedAnswerPrompts.toolPrompt(repairInstruction),
                 Map.of("context", context),
+                historyMessages,
+                userInput);
+    }
+
+    @Override
+    public Mono<SourcedAnswerResult> callReviewedAnswer(ReactiveChatGateway reactiveChatGateway,
+                                                        String context,
+                                                        String userInput,
+                                                        String conversationId,
+                                                        List<Message> historyMessages,
+                                                        String reviewedCandidateAnswer,
+                                                        List<String> reviewedEvidenceIds,
+                                                        String repairInstruction) {
+        return reactiveChatGateway.callSourcedAnswerTool(
+                openAiApi,
+                model,
+                SourcedAnswerPrompts.reviewedToolPrompt(repairInstruction),
+                Map.of(
+                        "context", context,
+                        "reviewedCandidateAnswer", reviewedCandidateAnswer,
+                        "reviewedEvidenceIds", reviewedEvidenceIds),
                 historyMessages,
                 userInput);
     }

@@ -21,6 +21,8 @@ public class UsedSourceValidator {
     public static final String REASON_EVIDENCE_ID_NOT_IN_CANDIDATES = "evidence_id_not_in_candidates";
     public static final String REASON_INVALID_ANSWER_TYPE = "invalid_answer_type";
     public static final String REASON_REFUSAL_SOURCES_NOT_EMPTY = "refusal_sources_not_empty";
+    public static final String REASON_REVIEWED_ANSWER_REFUSED = "reviewed_answer_refused";
+    public static final String REASON_REQUIRED_EVIDENCE_NOT_USED = "required_evidence_not_used";
 
     // 验证 LLM 回答中的引用：确保每个 usedSources 中的 evidence_id 都在候选文档中存在
     // 验证失败 → 抛异常，回答被拒绝，返回"无法可靠生成带溯源的答案"

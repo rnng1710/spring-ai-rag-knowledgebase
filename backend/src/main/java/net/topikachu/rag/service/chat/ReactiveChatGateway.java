@@ -6,7 +6,6 @@ import lombok.extern.slf4j.Slf4j;
 import net.topikachu.rag.observability.TracingSupport;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
-import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.ai.chat.messages.UserMessage;
@@ -14,7 +13,6 @@ import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.ai.openai.api.ResponseFormat;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.ai.tool.ToolCallback;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
@@ -117,10 +115,7 @@ public class ReactiveChatGateway {
                                 chatClient,
                                 systemText,
                                 systemParams,
-                                messages,
-                                List.of(),
-                                List.of(),
-                                Map.of())
+                                messages)
                                 .options(jsonObjectOptions())
                                 .call()
                                 .content())
@@ -150,26 +145,6 @@ public class ReactiveChatGateway {
                             return decodeSourcedAnswerToolCall(response.getBody(), objectMapper);
                         })
                         .subscribeOn(Schedulers.boundedElastic()));
-    }
-
-    public <T> Mono<T> runToolPhase(ChatClient chatClient,
-                                    String systemText,
-                                    Map<String, Object> systemParams,
-                                    List<Message> messages,
-                                    List<Advisor> advisors,
-                                    List<ToolCallback> toolCallbacks,
-                                    Map<String, Object> toolContext,
-                                    Class<T> responseType) {
-        return tracingSupport.traceMono("llm.tool_phase",
-                Map.of(
-                        "llm.prompt_chars", systemText == null ? 0 : systemText.length(),
-                        "llm.history_messages", messages == null ? 0 : messages.size(),
-                        "llm.tool_count", toolCallbacks == null ? 0 : toolCallbacks.size()),
-                        Mono.fromCallable(() -> buildPrompt(chatClient, systemText, systemParams, messages, advisors, toolCallbacks, toolContext)
-                                .call()
-                                .content())
-                                .doOnNext(raw -> logRawToolResponse(responseType, raw))
-                                .map(raw -> decodeStructuredResponse(raw, responseType, objectMapper)));
     }
 
     public Flux<String> stream(ChatClient chatClient,
@@ -204,29 +179,13 @@ public class ReactiveChatGateway {
         return prompt;
     }
 
-    private ChatClient.ChatClientRequestSpec buildPrompt(ChatClient chatClient,
-                                                         String systemText,
-                                                         Map<String, Object> systemParams,
-                                                         List<Message> messages,
-                                                         List<Advisor> advisors,
-                                                         List<ToolCallback> toolCallbacks,
-                                                         Map<String, Object> toolContext) {
-        ChatClient.ChatClientRequestSpec prompt = chatClient.prompt();
-        prompt = applySystem(prompt, systemText, systemParams);
-        if (messages != null && !messages.isEmpty()) {
-            prompt = prompt.messages(messages);
-        }
-        if (advisors != null && !advisors.isEmpty()) {
-            prompt = prompt.advisors(advisors);
-        }
-        if (toolCallbacks != null && !toolCallbacks.isEmpty()) {
-            prompt = prompt.toolCallbacks(toolCallbacks);
-        }
-        if (toolContext != null && !toolContext.isEmpty()) {
-            prompt = prompt.toolContext(toolContext);
-        }
-        return prompt;
-    }
+	private ChatClient.ChatClientRequestSpec buildPrompt(ChatClient chatClient,
+												 String systemText,
+												 Map<String, Object> systemParams,
+												 List<Message> messages) {
+		ChatClient.ChatClientRequestSpec prompt = applySystem(chatClient.prompt(), systemText, systemParams);
+		return messages == null || messages.isEmpty() ? prompt : prompt.messages(messages);
+	}
 
     private ChatClient.ChatClientRequestSpec applySystem(ChatClient.ChatClientRequestSpec prompt,
                                                          String systemText,
@@ -317,11 +276,11 @@ public class ReactiveChatGateway {
     static SourcedAnswerResult decodeSourcedAnswerToolCall(OpenAiApi.ChatCompletion completion,
                                                            ObjectMapper objectMapper) {
         if (completion == null || completion.choices() == null || completion.choices().isEmpty()) {
-            throw new IllegalArgumentException("Missing structured sourced answer tool call.");
+            throw new StructuredResponseException("Missing structured sourced answer tool call.");
         }
         OpenAiApi.ChatCompletionMessage message = completion.choices().get(0).message();
         if (message == null || message.toolCalls() == null || message.toolCalls().isEmpty()) {
-            throw new IllegalArgumentException("Missing structured sourced answer tool call.");
+            throw new StructuredResponseException("Missing structured sourced answer tool call.");
         }
         OpenAiApi.ChatCompletionMessage.ToolCall toolCall = message.toolCalls().get(0);
         OpenAiApi.ChatCompletionMessage.ChatCompletionFunction function = toolCall.function();
@@ -329,13 +288,16 @@ public class ReactiveChatGateway {
                 function == null ? "" : function.name(),
                 function == null ? "" : function.arguments());
         if (function == null || !SUBMIT_SOURCED_ANSWER_TOOL.equals(function.name())) {
-            throw new IllegalArgumentException("Unexpected structured sourced answer tool call: "
+            throw new StructuredResponseException("Unexpected structured sourced answer tool call: "
                     + (function == null ? "" : function.name()));
+        }
+        if (function.arguments() == null || function.arguments().isBlank()) {
+            throw new StructuredResponseException("Missing structured sourced answer arguments.");
         }
         try {
             return objectMapper.readValue(function.arguments(), SourcedAnswerResult.class);
         } catch (JsonProcessingException error) {
-            throw new IllegalArgumentException("Could not parse structured sourced answer tool call.", error);
+            throw new StructuredResponseException("Could not parse structured sourced answer tool call.", error);
         }
     }
 
@@ -349,18 +311,9 @@ public class ReactiveChatGateway {
                 raw);
     }
 
-    private <T> void logRawToolResponse(Class<T> responseType, String raw) {
-        if (!logRawResponse) {
-            return;
-        }
-        log.info("[LLM-RAW-TOOL] responseType={}, raw={}",
-                responseType == null ? "" : responseType.getSimpleName(),
-                raw);
-    }
-
     static <T> T decodeStructuredResponse(String raw, Class<T> responseType, ObjectMapper objectMapper) {
         if (raw == null || raw.isBlank()) {
-            throw new IllegalArgumentException("LLM returned blank structured response.");
+            throw new StructuredResponseException("LLM returned blank structured response.");
         }
 
         // Step 1: try parsing the raw response directly
@@ -388,13 +341,13 @@ public class ReactiveChatGateway {
             } catch (JsonProcessingException e) {
                 log.debug("Structured response parse failed after extraction. Raw (first 500 chars): {}",
                         raw.substring(0, Math.min(raw.length(), 500)));
-                throw new IllegalArgumentException("Could not parse structured tool-phase response.", e);
+                throw new StructuredResponseException("Could not parse structured response.", e);
             }
         }
 
         log.debug("No JSON object found in structured response. Raw (first 500 chars): {}",
                 raw.substring(0, Math.min(raw.length(), 500)));
-        throw new IllegalArgumentException("Could not parse structured tool-phase response.");
+        throw new StructuredResponseException("Could not parse structured response.");
     }
 
     static String extractStructuredJson(String raw) {

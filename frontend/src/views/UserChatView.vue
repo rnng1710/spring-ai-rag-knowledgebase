@@ -139,15 +139,44 @@
                     </div>
 
                     <div v-if="msg.mode === 'agent' && msg.agentTrace" class="agent-trace-block">
-                      <div class="agent-stage-line">
-                        <span class="agent-stage-pill">{{ stageLabel(msg.agentTrace.currentStage) }}</span>
-                        <span v-if="msg.agentTrace.isRevised" class="agent-revised-badge">{{ t("chat.revisedBadge") }}</span>
-                      </div>
-                      <details class="agent-trace-panel">
-                        <summary>{{ t("chat.agentTrace") }}</summary>
-                        <div class="agent-trace-log" v-for="(log, logIndex) in msg.agentTrace.logs" :key="`${msg.id}-${logIndex}`">
-                          <span class="agent-log-stage">{{ stageLabel(log.stage) }}</span>
-                          <span class="agent-log-text">{{ log.text }}</span>
+                      <details class="agent-trace-panel" :class="{ 'is-completed': msg.agentTrace.currentStage === 'done' }" open>
+                        <summary class="agent-trace-summary">
+                          <div class="summary-content">
+                            <span v-if="msg.agentTrace.currentStage === 'done'" class="summary-icon done"><el-icon><Check /></el-icon></span>
+                            <span v-else-if="msg.agentTrace.currentStage === 'error'" class="summary-icon error"><el-icon><Close /></el-icon></span>
+                            <span v-else class="summary-icon active"><el-icon class="is-loading"><Loading /></el-icon></span>
+                            <span class="summary-text">
+                              {{ msg.agentTrace.currentStage === 'done' ? '✨ 思考过程完成' : `✨ AI 正在思考: ${stageLabel(msg.agentTrace.currentStage)}...` }}
+                            </span>
+                            <span v-if="msg.agentTrace.isRevised" class="agent-revised-badge">{{ t("chat.revisedBadge") }}</span>
+                          </div>
+                          <div class="summary-chevron">
+                            <el-icon><ArrowRight /></el-icon>
+                          </div>
+                        </summary>
+                        <div class="agent-timeline">
+                          <div class="timeline-item" v-for="(log, logIndex) in msg.agentTrace.logs" :key="`${msg.id}-${logIndex}`">
+                            <div class="timeline-tail"></div>
+                            <div class="timeline-node timeline-node--completed"><el-icon><Check /></el-icon></div>
+                            <div class="timeline-wrapper">
+                              <div class="timeline-content">
+                                <div class="timeline-stage">{{ stageLabel(log.stage) }}</div>
+                                <div class="timeline-text">{{ log.text }}</div>
+                              </div>
+                            </div>
+                          </div>
+                          <div class="timeline-item is-active" v-if="!['done', 'error', 'idle'].includes(msg.agentTrace.currentStage)">
+                             <div class="timeline-tail"></div>
+                             <div class="timeline-node timeline-node--active">
+                               <div class="pulse-dot"></div>
+                             </div>
+                             <div class="timeline-wrapper">
+                               <div class="timeline-content">
+                                 <div class="timeline-stage">{{ stageLabel(msg.agentTrace.currentStage) }}</div>
+                                 <div class="timeline-text loading-text">正在处理中...</div>
+                               </div>
+                             </div>
+                          </div>
                         </div>
                       </details>
                     </div>
@@ -267,7 +296,7 @@ import {
   type ChatSessionItem,
 } from "../api/chatHistory";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Plus, SwitchButton, Position, Close, Collection, Search, EditPen, Delete, Fold, Expand } from "@element-plus/icons-vue";
+import { Plus, SwitchButton, Position, Close, Collection, Search, EditPen, Delete, Fold, Expand, Loading, ArrowRight, Check } from "@element-plus/icons-vue";
 import { clearAuthSession, getAccessToken, getUsernameFromAccessToken } from "../utils/auth";
 import { useI18n } from "vue-i18n";
 import MarkdownRenderer from "../components/MarkdownRenderer.vue";
@@ -1117,11 +1146,10 @@ const logout = () => {
 /* --- Active State --- */
 .chat-thread {
   flex: 1;
+  min-height: 0; /* Ensure it can shrink and scroll properly */
   overflow-y: auto;
   padding: 40px 0 100px 0; /* Box bottom padding for input space */
-  display: flex;
-  flex-direction: column;
-  align-items: center; 
+  display: block; /* Avoid flex column centering bugs that clip scroll */
   scroll-behavior: smooth;
   background: transparent;
   border: none;
@@ -1222,7 +1250,7 @@ const logout = () => {
   max-width: 800px;
   padding: 0 24px;
   display: flex;
-  margin-bottom: 32px;
+  margin: 0 auto 32px auto;
 }
 
 .message-row.user {
@@ -1310,57 +1338,154 @@ const logout = () => {
 }
 .agent-trace-block {
     margin-top: 14px;
-}
-.agent-stage-line {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    flex-wrap: wrap;
-}
-.agent-stage-pill,
-.agent-revised-badge {
-    display: inline-flex;
-    align-items: center;
-    border-radius: 999px;
-    padding: 4px 10px;
-    font-size: 12px;
-    font-weight: 500;
-}
-.agent-stage-pill {
-    background: var(--chat-pill-bg);
-    color: var(--chat-pill-text);
-}
-.agent-revised-badge {
-    background: var(--chat-revised-bg);
-    color: var(--chat-revised-text);
+    margin-bottom: 14px;
 }
 .agent-trace-panel {
-    margin-top: 10px;
-    background: var(--chat-trace-bg);
-    border: 1px solid var(--chat-trace-border);
-    border-radius: 14px;
-    padding: 10px 14px;
+    background: var(--chat-trace-bg, rgba(255, 255, 255, 0.03));
+    border: 1px solid var(--chat-trace-border, rgba(255, 255, 255, 0.1));
+    border-radius: 12px;
+    overflow: hidden;
+    transition: all 0.3s ease;
 }
-.agent-trace-panel summary {
-    cursor: pointer;
-    font-size: 13px;
-    color: var(--chat-text-secondary);
-    font-weight: 500;
-}
-.agent-trace-log {
+.agent-trace-summary {
     display: flex;
-    gap: 8px;
-    margin-top: 10px;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    cursor: pointer;
+    user-select: none;
+    list-style: none;
+    background: rgba(0, 0, 0, 0.1);
+}
+.agent-trace-summary::-webkit-details-marker {
+    display: none;
+}
+.agent-trace-summary .summary-content {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.summary-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    font-size: 14px;
+}
+.summary-icon.active {
+    color: #409eff;
+    background: rgba(64, 158, 255, 0.1);
+}
+.summary-icon.done {
+    color: #67c23a;
+    background: rgba(103, 194, 58, 0.1);
+}
+.summary-icon.error {
+    color: #f56c6c;
+    background: rgba(245, 108, 108, 0.1);
+}
+.summary-text {
     font-size: 13px;
+    font-weight: 500;
+    color: var(--chat-text-primary);
+}
+.summary-chevron {
+    color: var(--chat-text-secondary);
+    transition: transform 0.3s ease;
+    display: flex;
+    align-items: center;
+}
+.agent-trace-panel[open] .summary-chevron {
+    transform: rotate(90deg);
+}
+.agent-timeline {
+    padding: 16px;
+    padding-left: 24px;
+}
+.timeline-item {
+    position: relative;
+    padding-bottom: 20px;
+}
+.timeline-item:last-child {
+    padding-bottom: 0;
+}
+.timeline-item:last-child .timeline-tail {
+    display: none;
+}
+.timeline-tail {
+    position: absolute;
+    left: 11px;
+    top: 24px;
+    bottom: 0;
+    width: 2px;
+    background-color: var(--chat-trace-border, rgba(255, 255, 255, 0.1));
+}
+.timeline-node {
+    position: absolute;
+    left: 0;
+    top: 2px;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: var(--chat-bg);
+    z-index: 1;
+}
+.timeline-node--completed {
+    color: #67c23a;
+    font-size: 14px;
+    background-color: rgba(103, 194, 58, 0.1);
+}
+.timeline-node--active {
+    background-color: transparent;
+}
+.pulse-dot {
+    width: 10px;
+    height: 10px;
+    background-color: #409eff;
+    border-radius: 50%;
+    box-shadow: 0 0 0 0 rgba(64, 158, 255, 0.7);
+    animation: pulse 2s infinite;
+}
+@keyframes pulse {
+    0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(64, 158, 255, 0.7); }
+    70% { transform: scale(1); box-shadow: 0 0 0 8px rgba(64, 158, 255, 0); }
+    100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(64, 158, 255, 0); }
+}
+.timeline-wrapper {
+    padding-left: 36px;
+}
+.timeline-content {
+    background: rgba(0, 0, 0, 0.05);
+    padding: 10px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--chat-trace-border, rgba(255, 255, 255, 0.05));
+}
+.timeline-stage {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--chat-text-primary);
+    margin-bottom: 4px;
+}
+.timeline-text {
+    font-size: 12px;
+    color: var(--chat-text-secondary);
     line-height: 1.5;
 }
-.agent-log-stage {
-    flex: 0 0 auto;
-    color: var(--chat-pill-text);
-    font-weight: 600;
+.loading-text {
+    color: #409eff;
 }
-.agent-log-text {
-    color: var(--chat-text-secondary);
+.agent-revised-badge {
+    background: var(--chat-revised-bg, #e6a23c);
+    color: var(--chat-revised-text, #fff);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: bold;
 }
 .followup-options {
     display: flex;

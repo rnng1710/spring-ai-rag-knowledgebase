@@ -9,7 +9,6 @@ public enum AgentStage {
     REVIEWING("reviewing"),
     REVISING("revising"),
     GENERATING_FINAL("generating_final"),
-    FOLLOWUP("followup"),
     DONE("done"),
     ERROR("error");
 

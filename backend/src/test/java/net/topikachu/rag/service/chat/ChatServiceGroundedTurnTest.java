@@ -74,7 +74,7 @@ class ChatServiceGroundedTurnTest {
                 eq("question"), eq(user), eq(SearchScope.empty()), eq(20), eq(10), anyMap()))
                 .thenReturn(Mono.just(new RetrievalResult(List.of(candidate), List.of(parent))));
         when(groundedTurnModule.execute(any()))
-                .thenReturn(Mono.just(new GroundedTurnModule.Result("answer", "factual", List.of(usedSource))));
+                .thenReturn(Mono.just(new GroundedTurnModule.Result("answer", "factual", List.of(usedSource), 0)));
 
         ChatService.ChatStreamResponse response = service.streamWithSources(
                         "question", "conversation-1", user, SearchScope.empty(), "model-1", "msg-1")
@@ -85,6 +85,8 @@ class ChatServiceGroundedTurnTest {
         ArgumentCaptor<GroundedTurnModule.Command> commandCaptor = ArgumentCaptor.forClass(GroundedTurnModule.Command.class);
         verify(groundedTurnModule).execute(commandCaptor.capture());
         assertEquals("rag", commandCaptor.getValue().mode());
+        assertEquals(GroundedTurnModule.AnswerPolicy.GROUNDED, commandCaptor.getValue().answerPolicy());
+        assertEquals(0, commandCaptor.getValue().maxAnswerRepairs());
         assertEquals(List.of(candidate), commandCaptor.getValue().candidateEvidence());
         assertEquals(List.of(parent), commandCaptor.getValue().parentContexts());
     }

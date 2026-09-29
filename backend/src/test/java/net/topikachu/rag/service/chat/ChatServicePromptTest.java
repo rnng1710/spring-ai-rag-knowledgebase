@@ -2,6 +2,8 @@ package net.topikachu.rag.service.chat;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -21,6 +23,19 @@ class ChatServicePromptTest {
         assertEquals(1, countOccurrences(prompt, "{context}"));
         assertFalse(prompt.contains("原系统要求"));
         assertFalse(prompt.contains("请直接回答"));
+    }
+
+    @Test
+    void repairInstructionIsSharedByJsonAndForcedToolPrompts() {
+        String repair = SourcedAnswerPrompts.repairInstruction("bad_sources", List.of("ev-1"));
+
+        String jsonPrompt = SourcedAnswerPrompts.jsonPrompt(repair);
+        String toolPrompt = SourcedAnswerPrompts.toolPrompt(repair);
+
+        assertTrue(jsonPrompt.endsWith(repair));
+        assertTrue(toolPrompt.endsWith(repair));
+        assertTrue(repair.contains("bad_sources"));
+        assertTrue(repair.contains("ev-1"));
     }
 
     private int countOccurrences(String text, String target) {

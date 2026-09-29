@@ -89,7 +89,9 @@ public class ChatService {
                         msgId,
                         traceId,
                         retrievalResult.childCandidates(),
-                        retrievalResult.parentContexts())))
+                        retrievalResult.parentContexts(),
+                        GroundedTurnModule.AnswerPolicy.GROUNDED,
+                        0)))
                 .map(result -> new ChatStreamResponse(Flux.just(result.answer()), result.usedSources()));
     }
 
