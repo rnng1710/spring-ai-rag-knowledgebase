@@ -69,6 +69,10 @@ backend/sql/20260507_object_storage.sql
 .codex-tmp/
 .playwright-mcp/
 backend/sql/
+!backend/sql/
+backend/sql/*
+!backend/sql/init_admin.sql
+!backend/sql/20260929_schema_snapshot.sql
 docs/
 CONTEXT.md
 start-all.bat

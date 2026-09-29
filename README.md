@@ -105,7 +105,7 @@ Spring Boot WebFlux Backend
 ```text
 .
 ├── backend/                 # Spring Boot WebFlux backend
-│   ├── sql/                 # schema migration / backfill scripts
+│   ├── sql/                 # schema snapshot, admin initialization; local historical migrations
 │   └── src/
 │       ├── main/java/net/topikachu/rag/
 │       │   ├── agent/       # Agent orchestration, tools, stages
@@ -155,9 +155,15 @@ Spring Boot WebFlux Backend
 
 ### 2. 启动基础设施
 
+基础设施已迁移到 WSL Ubuntu-24.04（Codex 连接名 `wsl-ubuntu`）。在 WSL 的项目根目录启动项目容器：
+
+当前开发环境的现有部署位于 `/home/rnng/services/campus-rag`，配置、模型和数据均在该目录；恢复该环境时应在此目录执行 Compose。SQL 实库核对见 [SQL 清单](SQL-SUMMARY.md)。
+
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
+
+WSL 内使用 `localhost` 和下表的宿主机端口；Windows 后端优先通过 WSL localhost 转发访问，无法访问时使用 `hostname -I` 查询的当前 WSL IP。容器间使用 Compose 服务名和容器端口。
 
 默认端口：
 
@@ -174,14 +180,19 @@ docker-compose up -d
 
 `reranker` 容器会挂载 `./models/bge-reranker-base:/data`。启动前需要先准备模型目录。
 
+首次运行需导入 `backend/sql/20260929_schema_snapshot.sql`，再按 [SQL 清单](SQL-SUMMARY.md) 执行 `backend/sql/init_admin.sql` 创建管理员。MySQL 容器只创建数据库，后端不会自动创建业务表。仓库仍缺少 Compose 挂载的 `user.yaml`、`otel-collector-config.yaml`；当前 WSL 部署目录已有这两个文件。
+
 ### 3. 配置后端
 
 建议从示例文件复制本地配置：
 
 ```bash
 cd backend
-cp src/main/resources/application.example.properties src/main/resources/application-local.properties
+cp src/main/resources/application.example.properties src/main/resources/application.properties
+cp src/main/resources/application-ollama-openai.example.properties src/main/resources/application-ollama-openai.properties
 ```
+
+数据库配置在第二个示例中。需要额外覆盖时，新建 `application-local.properties`，不要在该 profile 文件内设置 `spring.profiles.active`。
 
 重点检查：
 
@@ -193,7 +204,7 @@ cp src/main/resources/application.example.properties src/main/resources/applicat
 - `spring.ai.openai.deepseek.*`、`spring.ai.google.genai.*` 或 Ollama OpenAI-compatible 相关配置
 - `rag.object-storage.*`
 
-仓库中的 `application.properties` 可能包含开发机地址。正式使用时应改成本机环境变量或本地 profile 覆盖，不要提交真实密钥。
+本地配置可能仍含旧部署地址，需按 WSL 环境覆盖。MySQL 使用宿主机端口 `3309`，BGE-M3 向量维度统一为 `1024`；补齐 MinIO 配置，并覆盖 profile 示例中的短 JWT 密钥。当前代码还要求提供 `DEEPSEEK_API_KEY`、`GEMINI_API_KEY`。不要提交真实密钥。
 
 ### 4. 启动 embedding 服务
 
@@ -224,23 +235,24 @@ POST http://localhost:8098/embed
 
 ```bash
 cd backend
-mvn spring-boot:run -Dspring-boot.run.profiles=local
+mvn spring-boot:run -Dspring-boot.run.profiles=ollama-openai,local
 ```
 
-后端默认监听 Spring Boot 默认端口 `8080`。如果你直接编辑 `application.properties`，也可以省略 `-Dspring-boot.run.profiles=local`。如果 Milvus collection 不存在，`MilvusSchemaInitializer` 会创建带 `embedding` 和 `sparse_vector` 字段的 hybrid schema。
+后端默认端口 `8080`，`local` 最后加载以覆盖模型 profile 配置。如果 Milvus collection 不存在，`MilvusSchemaInitializer` 会创建 hybrid schema；它不负责 MySQL 建表。
 
 ### 6. 启动前端
 
 ```bash
 cd frontend
+cp .env.example .env
 npm install
 npm run dev
 ```
 
-前端默认读取：
+前端读取 `.env`（不会自动读取 `.env.example`）：
 
 ```text
-frontend/.env.example
+frontend/.env
 VITE_API_BASE=http://localhost:8080
 ```
 
@@ -467,7 +479,7 @@ Spring Boot WebFlux Backend
 ```text
 .
 ├── backend/                 # Spring Boot WebFlux backend
-│   ├── sql/                 # schema migration / backfill scripts
+│   ├── sql/                 # schema snapshot, admin initialization; local historical migrations
 │   └── src/
 │       ├── main/java/net/topikachu/rag/
 │       │   ├── agent/       # Agent orchestration, tools, stages
@@ -517,9 +529,15 @@ Spring Boot WebFlux Backend
 
 ### 2. Start Infrastructure
 
+Infrastructure now runs in WSL Ubuntu-24.04 (Codex connection: `wsl-ubuntu`). Run from the project root in WSL:
+
+The existing development deployment, configs, models, and data are in `/home/rnng/services/campus-rag`; use that directory when restoring this environment. See the [SQL inventory](SQL-SUMMARY.md) for database findings.
+
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
+
+Use `localhost` and published host ports within WSL. A Windows backend can use WSL localhost forwarding; if unavailable, obtain the current WSL IP with `hostname -I`. Between containers, use Compose service names and container ports.
 
 Default ports:
 
@@ -536,14 +554,19 @@ Default ports:
 
 The `reranker` container mounts `./models/bge-reranker-base:/data`, so prepare that model directory before startup.
 
+For a fresh installation, import `backend/sql/20260929_schema_snapshot.sql`, then follow the [SQL inventory](SQL-SUMMARY.md) to run `backend/sql/init_admin.sql`. MySQL creates the database only; the backend does not create business tables. The repository still lacks the mounted `user.yaml` and `otel-collector-config.yaml`; both exist in the current WSL deployment directory.
+
 ### 3. Configure Backend
 
 Use the example config as a starting point:
 
 ```bash
 cd backend
-cp src/main/resources/application.example.properties src/main/resources/application-local.properties
+cp src/main/resources/application.example.properties src/main/resources/application.properties
+cp src/main/resources/application-ollama-openai.example.properties src/main/resources/application-ollama-openai.properties
 ```
+
+Database settings are in the second example. For additional overrides, create `application-local.properties` without `spring.profiles.active` inside it.
 
 Check these settings first:
 
@@ -555,7 +578,7 @@ Check these settings first:
 - `spring.ai.openai.deepseek.*`, `spring.ai.google.genai.*`, or Ollama OpenAI-compatible settings
 - `rag.object-storage.*`
 
-The committed `application.properties` may contain local development IPs. Use environment variables or local profile overrides for your machine, and do not commit real secrets.
+Local settings may contain old deployment addresses; override them for WSL. Use MySQL host port `3309` and BGE-M3 dimension `1024`, supply MinIO settings, and replace the profile example's short JWT secret. Current code also requires `DEEPSEEK_API_KEY` and `GEMINI_API_KEY`. Do not commit real secrets.
 
 ### 4. Start Embedding Service
 
@@ -586,23 +609,24 @@ The request accepts a string or string array. The response contains `dense_vecs`
 
 ```bash
 cd backend
-mvn spring-boot:run -Dspring-boot.run.profiles=local
+mvn spring-boot:run -Dspring-boot.run.profiles=ollama-openai,local
 ```
 
-The backend uses Spring Boot's default port `8080`. If you edit `application.properties` directly, you can omit `-Dspring-boot.run.profiles=local`. If the Milvus collection does not exist, `MilvusSchemaInitializer` creates a hybrid schema with `embedding` and `sparse_vector` fields.
+The backend defaults to port `8080`. The `local` profile loads last to override model profile settings. `MilvusSchemaInitializer` creates a missing hybrid collection; it does not create MySQL tables.
 
 ### 6. Start Frontend
 
 ```bash
 cd frontend
+cp .env.example .env
 npm install
 npm run dev
 ```
 
-Frontend API base:
+The frontend reads `.env`, not `.env.example`:
 
 ```text
-frontend/.env.example
+frontend/.env
 VITE_API_BASE=http://localhost:8080
 ```
 
