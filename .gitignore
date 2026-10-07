@@ -56,7 +56,8 @@ backend/src/main/resources/application.properties
 # Generated outputs
 output/
 load-tests/results/
-evaluation/
+# Root evaluation assets/results; keep Java evaluation packages versioned.
+/evaluation/
 rerank/
 rerank-service/
 diff.txt
