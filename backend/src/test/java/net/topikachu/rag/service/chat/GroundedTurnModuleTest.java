@@ -189,83 +189,70 @@ class GroundedTurnModuleTest {
     }
 
     @Test
-    void reviewedAnswerCannotReconsiderAnswerability() {
+    void reviewedAnswerCannotReconsiderAnswerabilityWhenRepairIsDisabled() {
         GroundedTurnModule.Command command = reviewedCommand(
                 List.of(candidate("ev-1", "doc-1", "first.pdf")),
-                "reviewed candidate",
-                List.of("ev-1"));
+                List.of("已支持方面"),
+                List.of(),
+                0);
 
         when(chatMemory.get("conversation-1")).thenReturn(List.of());
         when(contextFormatter.formatParentContexts(anyList())).thenReturn("parent context");
         when(strategyFactory.getStrategy("model-1")).thenReturn(strategy);
         when(strategy.callReviewedAnswer(
                 same(reactiveChatGateway), eq("parent context"), eq("question"),
-                eq("conversation-1"), anyList(), eq("reviewed candidate"), eq(List.of("ev-1")),
+                eq("conversation-1"), anyList(), eq(List.of("已支持方面")), eq(List.of()),
                 nullable(String.class)))
-                .thenReturn(
-                        Mono.just(new SourcedAnswerResult("refusal", "refusal", List.of())),
-                        Mono.just(new SourcedAnswerResult("answer", "factual", List.of("ev-1"))));
-        when(chatHistoryService.saveTurn(
-                "conversation-1", "user-1", "question", "answer", "model-1", "agent", "msg-1"))
-                .thenReturn(Mono.empty());
-        when(persistenceService.saveConversation(
-                eq("msg-1"), eq("conversation-1"), eq("user-1"), eq("question"), eq("answer"),
-                eq("model-1"), eq("agent"), anyList(), anyList(), eq("trace-1")))
-                .thenReturn(Mono.empty());
+                .thenReturn(Mono.just(new SourcedAnswerResult("refusal", "refusal", List.of())));
 
-        GroundedTurnModule.Result result = module.execute(command).block();
+        StepVerifier.create(module.execute(command))
+                .expectError(SourceValidationException.class)
+                .verify();
 
-        assertEquals("answer", result.answer());
-        assertEquals(1, result.repairCount());
-        ArgumentCaptor<String> repairCaptor = ArgumentCaptor.forClass(String.class);
-        verify(strategy, times(2)).callReviewedAnswer(
+        verify(strategy, times(1)).callReviewedAnswer(
                 same(reactiveChatGateway), eq("parent context"), eq("question"),
-                eq("conversation-1"), anyList(), eq("reviewed candidate"), eq(List.of("ev-1")),
-                repairCaptor.capture());
-        assertTrue(repairCaptor.getAllValues().get(1)
-                .contains(UsedSourceValidator.REASON_REVIEWED_ANSWER_REFUSED));
+                eq("conversation-1"), anyList(), eq(List.of("已支持方面")), eq(List.of()),
+                nullable(String.class));
         verify(strategy, never()).callSourcedAnswer(
                 same(reactiveChatGateway), eq("parent context"), eq("question"),
                 eq("conversation-1"), anyList(), nullable(String.class));
     }
 
     @Test
-    void reviewedAnswerMustUseEverySelectedEvidenceId() {
+    void reviewedAnswerMayUseOnlyTheSelectedEvidenceItActuallyNeeds() {
         GroundedTurnModule.Command command = reviewedCommand(
                 List.of(
                         candidate("ev-1", "doc-1", "first.pdf"),
                         candidate("ev-2", "doc-2", "second.pdf")),
-                "reviewed candidate",
-                List.of("ev-1", "ev-2"));
+                List.of("已支持方面"),
+                List.of("未覆盖方面"),
+                0);
 
         when(chatMemory.get("conversation-1")).thenReturn(List.of());
         when(contextFormatter.formatParentContexts(anyList())).thenReturn("parent context");
         when(strategyFactory.getStrategy("model-1")).thenReturn(strategy);
         when(strategy.callReviewedAnswer(
                 same(reactiveChatGateway), eq("parent context"), eq("question"),
-                eq("conversation-1"), anyList(), eq("reviewed candidate"), eq(List.of("ev-1", "ev-2")),
+                eq("conversation-1"), anyList(), eq(List.of("已支持方面")), eq(List.of("未覆盖方面")),
                 nullable(String.class)))
-                .thenReturn(
-                        Mono.just(new SourcedAnswerResult("incomplete citations", "factual", List.of("ev-1"))),
-                        Mono.just(new SourcedAnswerResult("answer", "factual", List.of("ev-1", "ev-2"))));
+                .thenReturn(Mono.just(new SourcedAnswerResult("bounded answer", "factual", List.of("ev-1"))));
         when(chatHistoryService.saveTurn(
-                "conversation-1", "user-1", "question", "answer", "model-1", "agent", "msg-1"))
+                "conversation-1", "user-1", "question", "bounded answer", "model-1", "agent", "msg-1"))
                 .thenReturn(Mono.empty());
         when(persistenceService.saveConversation(
-                eq("msg-1"), eq("conversation-1"), eq("user-1"), eq("question"), eq("answer"),
+                eq("msg-1"), eq("conversation-1"), eq("user-1"), eq("question"), eq("bounded answer"),
                 eq("model-1"), eq("agent"), anyList(), anyList(), eq("trace-1")))
                 .thenReturn(Mono.empty());
 
         GroundedTurnModule.Result result = module.execute(command).block();
 
-        assertEquals(1, result.repairCount());
-        ArgumentCaptor<String> repairCaptor = ArgumentCaptor.forClass(String.class);
-        verify(strategy, times(2)).callReviewedAnswer(
+        assertEquals("bounded answer", result.answer());
+        assertEquals(0, result.repairCount());
+        assertEquals(List.of("ev-1"), result.usedSources().stream().map(UsedSource::evidenceId).toList());
+        verify(strategy, times(1)).callReviewedAnswer(
                 same(reactiveChatGateway), eq("parent context"), eq("question"),
-                eq("conversation-1"), anyList(), eq("reviewed candidate"), eq(List.of("ev-1", "ev-2")),
-                repairCaptor.capture());
-        assertTrue(repairCaptor.getAllValues().get(1)
-                .contains(UsedSourceValidator.REASON_REQUIRED_EVIDENCE_NOT_USED));
+                eq("conversation-1"), anyList(), eq(List.of("已支持方面")), eq(List.of("未覆盖方面")),
+                nullable(String.class));
     }
 
     @Test
@@ -430,8 +417,9 @@ class GroundedTurnModuleTest {
     }
 
     private GroundedTurnModule.Command reviewedCommand(List<Document> candidates,
-                                                       String reviewedCandidateAnswer,
-                                                       List<String> reviewedEvidenceIds) {
+                                                       List<String> supportedAspects,
+                                                       List<String> missingAspects,
+                                                       int maxAnswerRepairs) {
         return new GroundedTurnModule.Command(
                 "question",
                 "conversation-1",
@@ -441,11 +429,15 @@ class GroundedTurnModuleTest {
                 "msg-1",
                 "trace-1",
                 candidates,
-                List.of(),
+                List.of(new ParentContextBlock(
+                        "parent-1", "doc-1", "first.pdf", "parent context",
+                        1, 1, 1, candidates.stream()
+                                .map(candidate -> candidate.getMetadata().get("evidence_id").toString())
+                                .toList(), 1)),
                 GroundedTurnModule.AnswerPolicy.REVIEWED_GROUNDED,
-                1,
-                reviewedCandidateAnswer,
-                reviewedEvidenceIds);
+                maxAnswerRepairs,
+                supportedAspects,
+                missingAspects);
     }
 
     private Document candidate(String evidenceId, String docUuid, String fileName) {

@@ -16,10 +16,8 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
-import java.util.Set;
 
 @Component
 @Slf4j
@@ -83,8 +81,8 @@ public final class GroundedTurnModule {
                                 command.userInput(),
                                 command.conversationId(),
                                 history,
-                                command.reviewedCandidateAnswer(),
-                                command.reviewedEvidenceIds(),
+                                command.supportedAspects(),
+                                command.missingAspects(),
                                 repairInstruction)
                         : strategy.callSourcedAnswer(
                                 reactiveChatGateway,
@@ -125,17 +123,6 @@ public final class GroundedTurnModule {
             throw new SourceValidationException(
                     UsedSourceValidator.UNRELIABLE_SOURCE_MESSAGE,
                     UsedSourceValidator.REASON_REVIEWED_ANSWER_REFUSED);
-        }
-        Set<String> usedEvidenceIds = new LinkedHashSet<>();
-        for (String evidenceId : answer.usedSources() == null ? List.<String>of() : answer.usedSources()) {
-            if (evidenceId != null && !evidenceId.isBlank()) {
-                usedEvidenceIds.add(evidenceId.strip());
-            }
-        }
-        if (!usedEvidenceIds.containsAll(command.reviewedEvidenceIds())) {
-            throw new SourceValidationException(
-                    UsedSourceValidator.UNRELIABLE_SOURCE_MESSAGE,
-                    UsedSourceValidator.REASON_REQUIRED_EVIDENCE_NOT_USED);
         }
     }
 
@@ -234,28 +221,21 @@ public final class GroundedTurnModule {
             List<ParentContextBlock> parentContexts,
             AnswerPolicy answerPolicy,
             int maxAnswerRepairs,
-            String reviewedCandidateAnswer,
-            List<String> reviewedEvidenceIds) {
+            List<String> supportedAspects,
+            List<String> missingAspects) {
 
         public Command {
             candidateEvidence = candidateEvidence == null ? List.of() : List.copyOf(candidateEvidence);
             parentContexts = parentContexts == null ? List.of() : List.copyOf(parentContexts);
             Objects.requireNonNull(answerPolicy, "answerPolicy must not be null");
-            reviewedCandidateAnswer = reviewedCandidateAnswer == null ? "" : reviewedCandidateAnswer.strip();
-            reviewedEvidenceIds = reviewedEvidenceIds == null
-                    ? List.of()
-                    : reviewedEvidenceIds.stream()
-                            .filter(Objects::nonNull)
-                            .map(String::strip)
-                            .filter(id -> !id.isEmpty())
-                            .distinct()
-                            .toList();
+            supportedAspects = normalizeAspects(supportedAspects);
+            missingAspects = normalizeAspects(missingAspects);
             if (maxAnswerRepairs < 0 || maxAnswerRepairs > 1) {
                 throw new IllegalArgumentException("maxAnswerRepairs must be 0 or 1");
             }
             if (answerPolicy == AnswerPolicy.REVIEWED_GROUNDED
-                    && (reviewedCandidateAnswer.isEmpty() || reviewedEvidenceIds.isEmpty())) {
-                throw new IllegalArgumentException("Reviewed answer and evidence ids are required");
+                    && (candidateEvidence.isEmpty() || parentContexts.isEmpty() || supportedAspects.isEmpty())) {
+                throw new IllegalArgumentException("Reviewed evidence, parent context and supported aspects are required");
             }
         }
 
@@ -282,8 +262,17 @@ public final class GroundedTurnModule {
                     parentContexts,
                     answerPolicy,
                     maxAnswerRepairs,
-                    "",
+					List.of(),
                     List.of());
+        }
+
+        private static List<String> normalizeAspects(List<String> values) {
+            return values == null ? List.of() : values.stream()
+                    .filter(Objects::nonNull)
+                    .map(String::strip)
+                    .filter(value -> !value.isEmpty())
+                    .distinct()
+                    .toList();
         }
     }
 

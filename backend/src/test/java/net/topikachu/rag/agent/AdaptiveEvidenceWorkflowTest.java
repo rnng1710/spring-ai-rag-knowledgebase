@@ -54,8 +54,6 @@ class AdaptiveEvidenceWorkflowTest {
 	@Mock
 	private RetrievalPipeline retrievalPipeline;
 	@Mock
-	private EvidenceGate evidenceGate;
-	@Mock
 	private ReactiveChatGateway reactiveChatGateway;
 	@Mock
 	private ChatModelStrategyFactory strategyFactory;
@@ -78,7 +76,6 @@ class AdaptiveEvidenceWorkflowTest {
 	void setUp() {
 		workflow = new AdaptiveEvidenceWorkflow(
 				retrievalPipeline,
-				evidenceGate,
 				reactiveChatGateway,
 				strategyFactory,
 				historySnapshotBuilder,
@@ -90,157 +87,153 @@ class AdaptiveEvidenceWorkflowTest {
 				2_000,
 				false);
 		when(historySnapshotBuilder.build(CONVERSATION_ID)).thenReturn(List.of());
+		when(contextFormatter.formatParentContexts(anyList())).thenReturn(FULL_CONTEXT);
 		when(tracingSupport.traceMono(anyString(), anyMap(), any()))
 				.thenAnswer(invocation -> invocation.getArgument(2));
 	}
 
 	@Test
-	void sufficientReviewComposesAfterOneRetrieval() {
+	void fullyAnswerableUsesOneReviewAndOneAnswerCall() {
 		stubInitialRetrieval(retrievalResult("ev-1"));
-		stubGate(EvidenceGate.Verdict.REVIEW);
-		stubReview(AdaptiveEvidenceWorkflow.ReviewVerdict.SUFFICIENT, List.of(), List.of());
-		when(groundedTurnModule.execute(any())).thenReturn(Mono.just(result()));
+		stubAssessments(assessment(
+				AdaptiveEvidenceWorkflow.AnswerabilityRating.FULLY_ANSWERABLE,
+				List.of("申请资格条件"), List.of("ev-1"), List.of(), List.of()));
+		when(groundedTurnModule.execute(any())).thenReturn(Mono.just(answerResult()));
 
-		AdaptiveEvidenceWorkflow.Answer answer = assertInstanceOf(
-				AdaptiveEvidenceWorkflow.Answer.class,
-				workflow.execute(request()).block());
+		assertInstanceOf(AdaptiveEvidenceWorkflow.Answer.class, workflow.execute(request()).block());
 
-		assertEquals("answer", answer.result().answer());
+		GroundedTurnModule.Command command = capturedCommand();
+		assertEquals(0, command.maxAnswerRepairs());
+		assertEquals(List.of("申请资格条件"), command.supportedAspects());
+		assertTrue(command.missingAspects().isEmpty());
+		assertEquals(List.of("ev-1"), evidenceIds(command));
+		verifyReviewCount(1);
+		verify(retrievalPipeline, never()).refineWithQueries(
+				anyString(), anyList(), anyList(), any(), any(), anyInt(), anyInt());
+		verifyPromptContract();
+	}
+
+	@Test
+	void limitedAnswerableGeneratesBoundedAnswerWithoutRetrieval() {
+		stubInitialRetrieval(retrievalResult("ev-1"));
+		stubAssessments(assessment(
+				AdaptiveEvidenceWorkflow.AnswerabilityRating.LIMITED_ANSWERABLE,
+				List.of("已知申请对象"), List.of("ev-1"), List.of("材料要求未覆盖"), List.of()));
+		when(groundedTurnModule.execute(any())).thenReturn(Mono.just(answerResult()));
+
+		assertInstanceOf(AdaptiveEvidenceWorkflow.Answer.class, workflow.execute(request()).block());
+
 		GroundedTurnModule.Command command = capturedCommand();
 		assertEquals(GroundedTurnModule.AnswerPolicy.REVIEWED_GROUNDED, command.answerPolicy());
-		assertEquals("candidate answer", command.reviewedCandidateAnswer());
-		assertEquals(List.of("ev-1"), command.reviewedEvidenceIds());
-		assertEquals(List.of("ev-1"), command.candidateEvidence().stream()
-				.map(document -> document.getMetadata().get("evidence_id").toString())
-				.toList());
-		verify(retrievalPipeline, never()).refineWithQueries(
-				anyString(), anyList(), anyList(), any(), any(), anyInt(), anyInt());
-		verifyReviewContext();
-	}
-
-	@Test
-	void insufficientReviewRefusesWithoutAnotherRetrieval() {
-		stubInitialRetrieval(retrievalResult("ev-1"));
-		stubGate(EvidenceGate.Verdict.REVIEW);
-		stubReview(AdaptiveEvidenceWorkflow.ReviewVerdict.INSUFFICIENT, List.of(), List.of());
-		when(groundedTurnModule.execute(any())).thenReturn(Mono.just(refusalResult()));
-
-		assertInstanceOf(AdaptiveEvidenceWorkflow.Refusal.class, workflow.execute(request()).block());
-
-		assertEquals(GroundedTurnModule.AnswerPolicy.KNOWLEDGE_REFUSAL, capturedCommand().answerPolicy());
+		assertEquals(List.of("材料要求未覆盖"), command.missingAspects());
+		verifyReviewCount(1);
 		verify(retrievalPipeline, never()).refineWithQueries(
 				anyString(), anyList(), anyList(), any(), any(), anyInt(), anyInt());
 	}
 
 	@Test
-	void partialReviewUsesItsQueriesAndThenComposes() {
+	void criticalGapRetrievesOnceThenGeneratesLimitedAnswer() {
 		stubInitialRetrieval(retrievalResult("ev-1"));
-		stubGate(EvidenceGate.Verdict.REVIEW, EvidenceGate.Verdict.REVIEW);
-		stubReviews(
-				new AdaptiveEvidenceWorkflow.EvidenceReview(
-						AdaptiveEvidenceWorkflow.ReviewVerdict.PARTIAL,
-						"partial candidate",
-						List.of("ev-1"),
-						List.of("缺少材料要求"),
-						List.of("奖学金材料要求", "奖学金成绩要求")),
-				new AdaptiveEvidenceWorkflow.EvidenceReview(
-						AdaptiveEvidenceWorkflow.ReviewVerdict.SUFFICIENT,
-						"complete candidate", List.of("ev-2"), List.of(), List.of()));
+		stubAssessments(
+				assessment(
+						AdaptiveEvidenceWorkflow.AnswerabilityRating.CRITICAL_RETRIEVAL_GAP,
+						List.of(), List.of(), List.of("缺少材料要求"),
+						List.of("奖学金申请材料要求是什么？", "奖学金成绩要求是什么？")),
+				assessment(
+						AdaptiveEvidenceWorkflow.AnswerabilityRating.LIMITED_ANSWERABLE,
+						List.of("材料要求"), List.of("ev-2"), List.of("成绩要求未覆盖"), List.of()));
 		when(retrievalPipeline.refineWithQueries(
 				eq(QUESTION),
-				eq(List.of("奖学金材料要求", "奖学金成绩要求")),
+				eq(List.of("奖学金申请材料要求是什么？", "奖学金成绩要求是什么？")),
 				anyList(), same(USER), same(SCOPE), eq(20), eq(12)))
 				.thenReturn(Mono.just(retrievalResult("ev-1", "ev-2")));
-		when(groundedTurnModule.execute(any())).thenReturn(Mono.just(result()));
+		when(groundedTurnModule.execute(any())).thenReturn(Mono.just(answerResult()));
 
 		assertInstanceOf(AdaptiveEvidenceWorkflow.Answer.class, workflow.execute(request()).block());
+
 		GroundedTurnModule.Command command = capturedCommand();
-		assertEquals(List.of("ev-2"), command.reviewedEvidenceIds());
-		assertEquals(List.of("ev-2"), command.candidateEvidence().stream()
-				.map(document -> document.getMetadata().get("evidence_id").toString())
-				.toList());
-		assertEquals(List.of("ev-2"), command.parentContexts().stream()
-				.flatMap(parent -> parent.evidenceIds().stream())
-				.toList());
-
-		verify(retrievalPipeline).refineWithQueries(
-				eq(QUESTION),
-				eq(List.of("奖学金材料要求", "奖学金成绩要求")),
-				anyList(), same(USER), same(SCOPE), eq(20), eq(12));
-		verify(evidenceGate, times(2)).assess(any());
-	}
-
-	@Test
-	void qualityRepairThenPartialRepairUsesThreeRoundsAndFourQueriesTotal() {
-		stubInitialRetrieval(retrievalResult("ev-1"));
-		stubGate(EvidenceGate.Verdict.RETRY, EvidenceGate.Verdict.REVIEW, EvidenceGate.Verdict.REVIEW);
-		stubSearchPlan(List.of("奖学金资格条件改写", "不应使用的第二条"));
-		stubReviews(
-				new AdaptiveEvidenceWorkflow.EvidenceReview(
-						AdaptiveEvidenceWorkflow.ReviewVerdict.PARTIAL,
-						"partial candidate",
-						List.of("ev-1"),
-						List.of("对象", "成绩", "材料", "时间"),
-						List.of("奖学金适用对象", "奖学金成绩要求", "奖学金材料要求", "奖学金申请时间")),
-				new AdaptiveEvidenceWorkflow.EvidenceReview(
-						AdaptiveEvidenceWorkflow.ReviewVerdict.SUFFICIENT,
-						"complete candidate", List.of("ev-3"), List.of(), List.of()));
-		when(retrievalPipeline.refineWithQueries(
-				eq(QUESTION), eq(List.of("奖学金资格条件改写")), anyList(),
-				same(USER), same(SCOPE), eq(20), eq(12)))
-				.thenReturn(Mono.just(retrievalResult("ev-1", "ev-2")));
-		when(retrievalPipeline.refineWithQueries(
-				eq(QUESTION),
-				eq(List.of("奖学金适用对象", "奖学金成绩要求", "奖学金材料要求")),
-				anyList(), same(USER), same(SCOPE), eq(20), eq(12)))
-				.thenReturn(Mono.just(retrievalResult("ev-1", "ev-2", "ev-3")));
-		when(groundedTurnModule.execute(any())).thenReturn(Mono.just(result()));
-
-		assertInstanceOf(AdaptiveEvidenceWorkflow.Answer.class, workflow.execute(request()).block());
-
-		verify(retrievalPipeline, times(2)).refineWithQueries(
-				eq(QUESTION), anyList(), anyList(), same(USER), same(SCOPE), eq(20), eq(12));
-	}
-
-	@Test
-	void finalPartialReviewRefusesWithoutFourthRound() {
-		stubInitialRetrieval(retrievalResult("ev-1"));
-		stubGate(EvidenceGate.Verdict.REVIEW, EvidenceGate.Verdict.REVIEW);
-		stubReviews(
-				new AdaptiveEvidenceWorkflow.EvidenceReview(
-						AdaptiveEvidenceWorkflow.ReviewVerdict.PARTIAL,
-						"partial candidate",
-						List.of("ev-1"),
-						List.of("缺少材料"), List.of("奖学金材料要求")),
-				new AdaptiveEvidenceWorkflow.EvidenceReview(
-						AdaptiveEvidenceWorkflow.ReviewVerdict.PARTIAL,
-						"still partial candidate",
-						List.of("ev-2"),
-						List.of("仍缺材料"), List.of()));
-		when(retrievalPipeline.refineWithQueries(
-				anyString(), anyList(), anyList(), any(), any(), anyInt(), anyInt()))
-				.thenReturn(Mono.just(retrievalResult("ev-1", "ev-2")));
-		when(groundedTurnModule.execute(any())).thenReturn(Mono.just(refusalResult()));
-
-		assertInstanceOf(AdaptiveEvidenceWorkflow.Refusal.class, workflow.execute(request()).block());
-
+		assertEquals(List.of("ev-2"), evidenceIds(command));
+		assertEquals(List.of("成绩要求未覆盖"), command.missingAspects());
+		verifyReviewCount(2);
 		verify(retrievalPipeline, times(1)).refineWithQueries(
 				anyString(), anyList(), anyList(), any(), any(), anyInt(), anyInt());
-		assertEquals(GroundedTurnModule.AnswerPolicy.KNOWLEDGE_REFUSAL, capturedCommand().answerPolicy());
 	}
 
 	@Test
-	void partialReviewWithoutQueriesFailsInsteadOfGeneratingAnAnswer() {
+	void secondCriticalGapRefusesWithoutThirdRetrieval() {
 		stubInitialRetrieval(retrievalResult("ev-1"));
-		stubGate(EvidenceGate.Verdict.REVIEW);
-		stubReview(
-				AdaptiveEvidenceWorkflow.ReviewVerdict.PARTIAL,
-				List.of("缺少材料"),
-				List.of());
+		stubAssessments(
+				criticalAssessment("缺少材料", "奖学金申请材料要求是什么？"),
+				criticalAssessment("仍缺材料", "奖学金申请材料完整清单是什么？"));
+		when(retrievalPipeline.refineWithQueries(
+				anyString(), anyList(), anyList(), any(), any(), anyInt(), anyInt()))
+				.thenReturn(Mono.just(retrievalResult("ev-1")));
+		when(groundedTurnModule.execute(any())).thenReturn(Mono.just(refusalResult()));
 
-		assertThrows(StructuredResponseException.class, () -> workflow.execute(request()).block());
+		assertInstanceOf(AdaptiveEvidenceWorkflow.Refusal.class, workflow.execute(request()).block());
+
+		assertEquals(GroundedTurnModule.AnswerPolicy.KNOWLEDGE_REFUSAL, capturedCommand().answerPolicy());
+		verifyReviewCount(2);
+		verify(retrievalPipeline, times(1)).refineWithQueries(
+				anyString(), anyList(), anyList(), any(), any(), anyInt(), anyInt());
+	}
+
+	@Test
+	void unanswerableRefusesWithoutSupplementalRetrieval() {
+		stubInitialRetrieval(retrievalResult("ev-1"));
+		stubAssessments(assessment(
+				AdaptiveEvidenceWorkflow.AnswerabilityRating.UNANSWERABLE,
+				List.of(), List.of(), List.of("知识库没有相关规定"), List.of()));
+		when(groundedTurnModule.execute(any())).thenReturn(Mono.just(refusalResult()));
+
+		assertInstanceOf(AdaptiveEvidenceWorkflow.Refusal.class, workflow.execute(request()).block());
+
+		verifyReviewCount(1);
 		verify(retrievalPipeline, never()).refineWithQueries(
 				anyString(), anyList(), anyList(), any(), any(), anyInt(), anyInt());
+	}
+
+	@Test
+	void emptyInitialEvidenceUsesUnifiedAssessmentAndCanRecover() {
+		stubInitialRetrieval(retrievalResult());
+		stubAssessments(
+				criticalAssessment("首次检索为空", "学校奖学金申请资格是什么？"),
+				assessment(
+						AdaptiveEvidenceWorkflow.AnswerabilityRating.FULLY_ANSWERABLE,
+						List.of("申请资格"), List.of("ev-1"), List.of(), List.of()));
+		when(retrievalPipeline.refineWithQueries(
+				anyString(), anyList(), anyList(), any(), any(), anyInt(), anyInt()))
+				.thenReturn(Mono.just(retrievalResult("ev-1")));
+		when(groundedTurnModule.execute(any())).thenReturn(Mono.just(answerResult()));
+
+		assertInstanceOf(AdaptiveEvidenceWorkflow.Answer.class, workflow.execute(request()).block());
+
+		verifyReviewCount(2);
+		verify(retrievalPipeline, times(1)).refineWithQueries(
+				anyString(), anyList(), anyList(), any(), any(), anyInt(), anyInt());
+	}
+
+	@Test
+	void duplicateSupplementalQueryRefusesWithoutRetrieval() {
+		stubInitialRetrieval(retrievalResult("ev-1"));
+		stubAssessments(criticalAssessment("缺少完整条件", QUESTION));
+		when(groundedTurnModule.execute(any())).thenReturn(Mono.just(refusalResult()));
+
+		assertInstanceOf(AdaptiveEvidenceWorkflow.Refusal.class, workflow.execute(request()).block());
+
+		verifyReviewCount(1);
+		verify(retrievalPipeline, never()).refineWithQueries(
+				anyString(), anyList(), anyList(), any(), any(), anyInt(), anyInt());
+	}
+
+	@Test
+	void rejectsLimitedAssessmentThatAlsoRequestsRetrieval() {
+		stubInitialRetrieval(retrievalResult("ev-1"));
+		stubAssessments(assessment(
+				AdaptiveEvidenceWorkflow.AnswerabilityRating.LIMITED_ANSWERABLE,
+				List.of("申请对象"), List.of("ev-1"), List.of("缺少材料"), List.of("补查材料")));
+
+		assertThrows(StructuredResponseException.class, () -> workflow.execute(request()).block());
 		verify(groundedTurnModule, never()).execute(any());
 	}
 
@@ -250,54 +243,72 @@ class AdaptiveEvidenceWorkflowTest {
 				.thenReturn(Mono.just(result));
 	}
 
-	private void stubGate(EvidenceGate.Verdict... verdicts) {
-		EvidenceGate.Assessment[] assessments = java.util.Arrays.stream(verdicts)
-				.map(verdict -> new EvidenceGate.Assessment(verdict, verdict.name().toLowerCase()))
-				.toArray(EvidenceGate.Assessment[]::new);
-		when(evidenceGate.assess(any())).thenReturn(assessments[0],
-				java.util.Arrays.copyOfRange(assessments, 1, assessments.length));
-	}
-
-	private void stubReview(AdaptiveEvidenceWorkflow.ReviewVerdict verdict,
-							List<String> missingPoints,
-							List<String> queries) {
-		String candidateAnswer = verdict == AdaptiveEvidenceWorkflow.ReviewVerdict.INSUFFICIENT
-				? ""
-				: "candidate answer";
-		List<String> supportingEvidenceIds = verdict == AdaptiveEvidenceWorkflow.ReviewVerdict.INSUFFICIENT
-				? List.of()
-				: List.of("ev-1");
-		stubReviews(new AdaptiveEvidenceWorkflow.EvidenceReview(
-				verdict, candidateAnswer, supportingEvidenceIds, missingPoints, queries));
-	}
-
-	private void stubReviews(AdaptiveEvidenceWorkflow.EvidenceReview... reviews) {
-		when(strategyFactory.getStrategy("model-1")).thenReturn(strategy);
-		when(strategy.getChatClient()).thenReturn(chatClient);
-		when(contextFormatter.formatParentContexts(anyList())).thenReturn(FULL_CONTEXT);
-		when(reactiveChatGateway.callStructured(
-				same(chatClient), anyString(), anyMap(), anyList(), eq(QUESTION), eq(CONVERSATION_ID),
-				eq(AdaptiveEvidenceWorkflow.EvidenceReview.class)))
-				.thenReturn(Mono.just(reviews[0]),
-						java.util.Arrays.stream(reviews).skip(1).map(Mono::just).toArray(Mono[]::new));
-	}
-
-	private void stubSearchPlan(List<String> queries) {
+	private void stubAssessments(AdaptiveEvidenceWorkflow.EvidenceAssessment... assessments) {
 		when(strategyFactory.getStrategy("model-1")).thenReturn(strategy);
 		when(strategy.getChatClient()).thenReturn(chatClient);
 		when(reactiveChatGateway.callStructured(
 				same(chatClient), anyString(), anyMap(), anyList(), eq(QUESTION), eq(CONVERSATION_ID),
-				eq(AdaptiveEvidenceWorkflow.SearchPlan.class)))
-				.thenReturn(Mono.just(new AdaptiveEvidenceWorkflow.SearchPlan(queries)));
+				eq(AdaptiveEvidenceWorkflow.EvidenceAssessment.class)))
+				.thenReturn(Mono.just(assessments[0]),
+						java.util.Arrays.stream(assessments).skip(1).map(Mono::just).toArray(Mono[]::new));
+	}
+
+	private AdaptiveEvidenceWorkflow.EvidenceAssessment assessment(
+			AdaptiveEvidenceWorkflow.AnswerabilityRating rating,
+			List<String> supportedAspects,
+			List<String> supportingEvidenceIds,
+			List<String> missingAspects,
+			List<String> supplementalQueries) {
+		return new AdaptiveEvidenceWorkflow.EvidenceAssessment(
+				rating,
+				"评审依据",
+				supportedAspects,
+				supportingEvidenceIds,
+				missingAspects,
+				supplementalQueries);
+	}
+
+	private AdaptiveEvidenceWorkflow.EvidenceAssessment criticalAssessment(String gap, String query) {
+		return assessment(
+				AdaptiveEvidenceWorkflow.AnswerabilityRating.CRITICAL_RETRIEVAL_GAP,
+				List.of(), List.of(), List.of(gap), List.of(query));
 	}
 
 	@SuppressWarnings("unchecked")
-	private void verifyReviewContext() {
-		ArgumentCaptor<Map<String, Object>> params = ArgumentCaptor.forClass(Map.class);
+	private void verifyPromptContract() {
+		ArgumentCaptor<String> prompt = ArgumentCaptor.forClass(String.class);
 		verify(reactiveChatGateway).callStructured(
-				same(chatClient), anyString(), params.capture(), anyList(), eq(QUESTION), eq(CONVERSATION_ID),
-				eq(AdaptiveEvidenceWorkflow.EvidenceReview.class));
-		assertEquals(FULL_CONTEXT, params.getValue().get("evidenceContext"));
+				same(chatClient), prompt.capture(), anyMap(), anyList(), eq(QUESTION), eq(CONVERSATION_ID),
+				eq(AdaptiveEvidenceWorkflow.EvidenceAssessment.class));
+		String value = prompt.getValue();
+		assertOrdered(value,
+				"# Instruction",
+				"## Metric Definition",
+				"## Criteria",
+				"## Rating Rubric",
+				"## Evaluation Steps",
+				"## Output Schema");
+		assertTrue(value.contains("FULLY_ANSWERABLE"));
+		assertTrue(value.contains("LIMITED_ANSWERABLE"));
+		assertTrue(value.contains("CRITICAL_RETRIEVAL_GAP"));
+		assertTrue(value.contains("UNANSWERABLE"));
+		assertTrue(!value.contains("canSearchAgain"));
+		assertTrue(!value.contains("{maxQueries}"));
+	}
+
+	private void assertOrdered(String value, String... markers) {
+		int previous = -1;
+		for (String marker : markers) {
+			int current = value.indexOf(marker);
+			assertTrue(current > previous, () -> marker + " must appear in order");
+			previous = current;
+		}
+	}
+
+	private void verifyReviewCount(int count) {
+		verify(reactiveChatGateway, times(count)).callStructured(
+				same(chatClient), anyString(), anyMap(), anyList(), eq(QUESTION), eq(CONVERSATION_ID),
+				eq(AdaptiveEvidenceWorkflow.EvidenceAssessment.class));
 	}
 
 	private GroundedTurnModule.Command capturedCommand() {
@@ -307,12 +318,18 @@ class AdaptiveEvidenceWorkflowTest {
 		return command.getValue();
 	}
 
+	private List<String> evidenceIds(GroundedTurnModule.Command command) {
+		return command.candidateEvidence().stream()
+				.map(document -> document.getMetadata().get("evidence_id").toString())
+				.toList();
+	}
+
 	private AdaptiveEvidenceWorkflow.AgentRequest request() {
 		return new AdaptiveEvidenceWorkflow.AgentRequest(
 				QUESTION, CONVERSATION_ID, "message-1", USER, SCOPE, "model-1", "trace-1", note -> {});
 	}
 
-	private GroundedTurnModule.Result result() {
+	private GroundedTurnModule.Result answerResult() {
 		return new GroundedTurnModule.Result("answer", "factual", List.of(), 0);
 	}
 
