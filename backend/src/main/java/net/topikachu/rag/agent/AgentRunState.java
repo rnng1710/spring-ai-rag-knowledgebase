@@ -22,7 +22,6 @@ public record AgentRunState(
 		List<SearchAttempt> attempts,
 		List<EvidenceSnapshot> evidence,
 		List<ParentContextBlock> parentContexts,
-		EvidenceGate.Assessment assessment,
 		List<AgentNote> notes
 ) {
 
@@ -67,7 +66,6 @@ public record AgentRunState(
 				List.of(),
 				List.of(),
 				List.of(),
-				null,
 				List.of());
 	}
 
@@ -85,7 +83,7 @@ public record AgentRunState(
 				kind,
 				text,
 				System.currentTimeMillis()));
-		return copy(nextStage, retrievalRound, attempts, evidence, parentContexts, assessment, nextNotes);
+		return copy(nextStage, retrievalRound, attempts, evidence, parentContexts, nextNotes);
 	}
 
 	public AgentRunState addNote(AgentStage wireStage, String kind, String text) {
@@ -105,12 +103,7 @@ public record AgentRunState(
 		}
 		List<SearchAttempt> nextAttempts = new ArrayList<>(attempts);
 		nextAttempts.addAll(additions);
-		return copy(stage, round, nextAttempts, nextEvidence, nextParentContexts, assessment, notes);
-	}
-
-	public AgentRunState withAssessment(EvidenceGate.Assessment nextAssessment) {
-		return copy(stage, retrievalRound, attempts, evidence, parentContexts,
-				Objects.requireNonNull(nextAssessment, "assessment must not be null"), notes);
+		return copy(stage, round, nextAttempts, nextEvidence, nextParentContexts, notes);
 	}
 
 	private AgentRunState copy(Stage nextStage,
@@ -118,7 +111,6 @@ public record AgentRunState(
 							   List<SearchAttempt> nextAttempts,
 							   List<EvidenceSnapshot> nextEvidence,
 							   List<ParentContextBlock> nextParentContexts,
-							   EvidenceGate.Assessment nextAssessment,
 							   List<AgentNote> nextNotes) {
 		return new AgentRunState(
 				runId,
@@ -134,7 +126,6 @@ public record AgentRunState(
 				nextAttempts,
 				nextEvidence,
 				nextParentContexts,
-				nextAssessment,
 				nextNotes);
 	}
 
@@ -159,16 +150,16 @@ public record AgentRunState(
 		COMPLETE
 	}
 
-	public record Budget(int maxRetrievalRounds, int maxSubqueries, int maxAnswerRepairs) {
+	public record Budget(int maxRetrievalRounds, int maxSubqueries) {
 
 		public Budget {
-			if (maxRetrievalRounds != 3 || maxSubqueries != 4 || maxAnswerRepairs != 1) {
-				throw new IllegalArgumentException("Agent budget is fixed at 3 retrieval rounds, 4 queries and 1 repair");
+			if (maxRetrievalRounds != 2 || maxSubqueries != 4) {
+				throw new IllegalArgumentException("Agent budget is fixed at 2 retrieval rounds and 4 queries");
 			}
 		}
 
 		public static Budget standard() {
-			return new Budget(3, 4, 1);
+			return new Budget(2, 4);
 		}
 	}
 

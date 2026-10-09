@@ -102,8 +102,8 @@ public class DeepSeekChatModelStrategy implements ChatModelStrategy {
                                                         String userInput,
                                                         String conversationId,
                                                         List<Message> historyMessages,
-                                                        String reviewedCandidateAnswer,
-                                                        List<String> reviewedEvidenceIds,
+                                                        List<String> supportedAspects,
+                                                        List<String> missingAspects,
                                                         String repairInstruction) {
         return reactiveChatGateway.callSourcedAnswerTool(
                 openAiApi,
@@ -111,8 +111,8 @@ public class DeepSeekChatModelStrategy implements ChatModelStrategy {
                 SourcedAnswerPrompts.reviewedToolPrompt(repairInstruction),
                 Map.of(
                         "context", context,
-                        "reviewedCandidateAnswer", reviewedCandidateAnswer,
-                        "reviewedEvidenceIds", reviewedEvidenceIds),
+                        "supportedAspects", supportedAspects,
+                        "missingAspects", missingAspects),
                 historyMessages,
                 userInput);
     }
